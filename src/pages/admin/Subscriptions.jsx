@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabaseAdmin } from '../../services/supabaseAdmin'
-import { Search, CreditCard, Clock, CheckCircle2, AlertTriangle, FileText, User, MessageSquare } from 'lucide-react'
+import { Search, CreditCard, Clock, CheckCircle2, AlertTriangle, FileText, User, MessageSquare, Calendar } from 'lucide-react'
 import { logAction } from '../../services/auditService'
 import { useAuth } from '../../context/AuthContext'
 import { buildWhatsAppUrl, formatRenewalMessage } from '../../utils/whatsappTemplates'
@@ -20,7 +20,9 @@ export default function Subscriptions() {
     const [ledgerData, setLedgerData] = useState([])
     const [ledgerLoading, setLedgerLoading] = useState(false)
     const [extendModalOpen, setExtendModalOpen] = useState(false)
-    const [extendDays, setExtendDays] = useState('7')
+    const [extendDays, setExtendDays] = useState('30')
+    const [targetExpiryDate, setTargetExpiryDate] = useState('')
+    const [autoReactivate, setAutoReactivate] = useState(true)
     const [subFilter, setSubFilter] = useState('all')
 
     // WhatsApp Reminder Modal
@@ -188,31 +190,49 @@ export default function Subscriptions() {
         }
     }
 
+    const applyExtendPreset = (type, value) => {
+        const currentStr = selectedShop?.next_billing_date ? selectedShop.next_billing_date.split('T')[0] : ''
+        let base = currentStr ? new Date(currentStr) : new Date()
+        const today = new Date()
+        if (isNaN(base.getTime()) || base < today) {
+            base = today
+        }
+        const d = new Date(base)
+        if (type === 'days') {
+            d.setDate(d.getDate() + value)
+            setExtendDays(String(value))
+        } else if (type === 'months') {
+            d.setMonth(d.getMonth() + value)
+        } else if (type === 'years') {
+            d.setFullYear(d.getFullYear() + value)
+        }
+        setTargetExpiryDate(d.toISOString().split('T')[0])
+    }
+
     const handleExtendBilling = async (e) => {
         e.preventDefault()
-        if (!supabaseAdmin || !selectedShop || !extendDays) return
+        if (!supabaseAdmin || !selectedShop || !targetExpiryDate) return
 
         setProcessing(true)
         try {
-            let nextDate = new Date(selectedShop.next_billing_date || new Date())
-            const today = new Date()
-            if (nextDate < today) {
-                nextDate = today
+            const updatePayload = { 
+                next_billing_date: targetExpiryDate
             }
-            nextDate.setDate(nextDate.getDate() + parseInt(extendDays))
+
+            const isFuture = new Date(targetExpiryDate + 'T23:59:59') >= new Date()
+            if (autoReactivate && isFuture && selectedShop.status === 'suspended') {
+                updatePayload.status = 'active'
+                updatePayload.suspension_reason = null
+            }
 
             const { error: updateError } = await supabaseAdmin
                 .from('shops')
-                .update({ 
-                    next_billing_date: nextDate.toISOString().split('T')[0],
-                    status: 'active',
-                    suspension_reason: null
-                })
+                .update(updatePayload)
                 .eq('id', selectedShop.id)
 
             if (updateError) throw updateError
 
-            alert(`Billing date extended by ${extendDays} days. Shop status updated to active.`)
+            alert(`Expiry date updated to ${targetExpiryDate}${updatePayload.status === 'active' ? ' and shop status updated to active.' : '.'}`)
 
             await logAction({
                 actor_id: user?.id,
@@ -220,7 +240,11 @@ export default function Subscriptions() {
                 action_type: 'EXTEND_BILLING_CYCLE',
                 target_type: 'SHOP',
                 target_id: selectedShop.id,
-                details: { extendDays, nextBillingDate: nextDate.toISOString().split('T')[0] }
+                details: { 
+                    previousDate: selectedShop.next_billing_date,
+                    newDate: targetExpiryDate,
+                    statusUpdated: updatePayload.status || selectedShop.status
+                }
             })
 
             setExtendModalOpen(false)
@@ -235,7 +259,17 @@ export default function Subscriptions() {
 
     const openExtendModal = (shop) => {
         setSelectedShop(shop)
-        setExtendDays('7')
+        const currentStr = shop.next_billing_date ? shop.next_billing_date.split('T')[0] : ''
+        let baseDate = currentStr ? new Date(currentStr) : new Date()
+        const today = new Date()
+        if (isNaN(baseDate.getTime()) || baseDate < today) {
+            baseDate = today
+        }
+        const initialDate = new Date(baseDate)
+        initialDate.setDate(initialDate.getDate() + 30)
+        setTargetExpiryDate(initialDate.toISOString().split('T')[0])
+        setExtendDays('30')
+        setAutoReactivate(true)
         setExtendModalOpen(true)
     }
 
@@ -778,49 +812,140 @@ export default function Subscriptions() {
                     </div>
                 </div>
             )}
-            {/* Extend Billing Modal */}
+            {/* Adjust / Extend Expiry Date Modal */}
             {extendModalOpen && selectedShop && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in duration-200">
                         <div className="p-6 border-b border-gray-100 bg-slate-50 flex justify-between items-center">
                             <div>
-                                <h3 className="text-xl font-bold text-gray-800">Extend Billing Cycle</h3>
+                                <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                    <Calendar className="text-blue-600" size={22} />
+                                    <span>Adjust Expiry / Billing Date</span>
+                                </h3>
                                 <p className="text-sm text-gray-500">For {selectedShop.name}</p>
                             </div>
+                            <button
+                                type="button"
+                                onClick={() => setExtendModalOpen(false)}
+                                className="text-slate-400 hover:text-slate-600 font-bold text-xl px-2"
+                            >
+                                &times;
+                            </button>
                         </div>
                         <form onSubmit={handleExtendBilling} className="p-6 space-y-4">
+                            {/* Current vs New Date Summary */}
+                            <div className="grid grid-cols-2 gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 text-xs">
+                                <div>
+                                    <span className="text-slate-400 font-semibold uppercase block text-[10px] tracking-wider">Current Expiry</span>
+                                    <span className="font-bold text-slate-700 text-sm">
+                                        {selectedShop.next_billing_date 
+                                            ? new Date(selectedShop.next_billing_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                                            : 'Not Set'}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="text-blue-500 font-semibold uppercase block text-[10px] tracking-wider">New Expiry</span>
+                                    <span className="font-bold text-blue-700 text-sm">
+                                        {targetExpiryDate
+                                            ? new Date(targetExpiryDate + 'T00:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                                            : 'Select date'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Auto Preset Buttons */}
                             <div>
-                                <label className="block text-sm font-bold text-gray-700 mb-1">Days to Extend</label>
-                                <select
+                                <label className="block text-xs font-bold text-gray-600 uppercase mb-2">
+                                    Auto Adjustment Presets (From current / today)
+                                </label>
+                                <div className="grid grid-cols-5 gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => applyExtendPreset('days', 7)}
+                                        className="px-2 py-2 text-xs font-bold rounded-lg border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 transition"
+                                    >
+                                        +7 Days
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyExtendPreset('days', 15)}
+                                        className="px-2 py-2 text-xs font-bold rounded-lg border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 transition"
+                                    >
+                                        +15 Days
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyExtendPreset('months', 1)}
+                                        className="px-2 py-2 text-xs font-bold rounded-lg border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 transition"
+                                    >
+                                        +1 Month
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyExtendPreset('months', 3)}
+                                        className="px-2 py-2 text-xs font-bold rounded-lg border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 transition"
+                                    >
+                                        +3 Months
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyExtendPreset('years', 1)}
+                                        className="px-2 py-2 text-xs font-bold rounded-lg border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-slate-700 hover:text-blue-700 transition"
+                                    >
+                                        +1 Year
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Manual Exact Date Selection */}
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">
+                                    Manual Exact Expiry Date
+                                </label>
+                                <input
+                                    type="date"
                                     required
-                                    value={extendDays}
-                                    onChange={e => setExtendDays(e.target.value)}
-                                    className="w-full p-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 bg-white font-bold"
-                                >
-                                    <option value="3">3 Days (Quick grace)</option>
-                                    <option value="7">7 Days (Standard extension)</option>
-                                    <option value="15">15 Days (Half month)</option>
-                                    <option value="30">30 Days (Full month)</option>
-                                </select>
+                                    value={targetExpiryDate}
+                                    onChange={e => setTargetExpiryDate(e.target.value)}
+                                    className="w-full p-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm bg-white"
+                                />
+                                <p className="text-[11px] text-gray-400 mt-1">
+                                    You can pick any exact date on the calendar, or click any auto-preset above.
+                                </p>
                             </div>
-                            <div className="p-4 rounded-xl text-sm bg-blue-50 text-blue-800 flex items-start gap-2">
-                                <CheckCircle2 size={24} className="shrink-0 text-blue-500" />
-                                <p>This will extend the next billing date without recording a payment transaction, and automatically activate the shop if suspended.</p>
+
+                            {/* Auto Reactivate Checkbox */}
+                            <label className="flex items-center gap-2 cursor-pointer pt-1">
+                                <input
+                                    type="checkbox"
+                                    checked={autoReactivate}
+                                    onChange={e => setAutoReactivate(e.target.checked)}
+                                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
+                                />
+                                <span className="text-xs font-medium text-slate-700">
+                                    Automatically activate shop if currently suspended
+                                </span>
+                            </label>
+
+                            <div className="p-3 rounded-xl text-xs bg-blue-50/70 border border-blue-100 text-blue-800 flex items-start gap-2">
+                                <CheckCircle2 size={18} className="shrink-0 text-blue-500 mt-0.5" />
+                                <p>Adjusts the expiry date immediately without creating a billing payment transaction entry.</p>
                             </div>
-                            <div className="flex gap-3 pt-4">
+
+                            <div className="flex gap-3 pt-2">
                                 <button
                                     type="button"
                                     onClick={() => setExtendModalOpen(false)}
-                                    className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition"
+                                    className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition text-sm"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
-                                    disabled={processing}
-                                    className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition disabled:opacity-50"
+                                    disabled={processing || !targetExpiryDate}
+                                    className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition disabled:opacity-50 text-sm"
                                 >
-                                    {processing ? 'Saving...' : 'Confirm Extension'}
+                                    {processing ? 'Saving...' : 'Save Expiry Date'}
                                 </button>
                             </div>
                         </form>
