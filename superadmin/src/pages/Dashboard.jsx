@@ -27,14 +27,24 @@ export default function Dashboard() {
     }
 
     try {
-      const [shopsRes, usersRes, paymentsRes, salesRes] = await Promise.all([
-        supabaseAdmin.from('shops').select('id, name, status, subscription_plan, subscription_fee, next_billing_date'),
+      let shopsRes = await supabaseAdmin.from('shops').select('id, name, status, subscription_plan, subscription_fee, next_billing_date, plan_id, phone')
+      if (shopsRes.error) {
+        shopsRes = await supabaseAdmin.from('shops').select('id, name, status, subscription_plan, next_billing_date, plan_id, phone')
+      }
+
+      const [usersRes, paymentsRes, salesRes, plansRes] = await Promise.all([
         supabaseAdmin.from('users').select('id', { count: 'exact' }),
         supabaseAdmin.from('shop_payments').select('amount'),
-        supabaseAdmin.from('sales').select('total_amount, created_at, shop_id')
+        supabaseAdmin.from('sales').select('total_amount, created_at, shop_id'),
+        supabaseAdmin.from('subscription_plans').select('id, price')
       ])
 
-      const shops = shopsRes.data || []
+      const planPriceMap = (plansRes.data || []).reduce((acc, p) => ({ ...acc, [p.id]: p.price }), {})
+      const rawShops = shopsRes.data || []
+      const shops = rawShops.map(s => ({
+        ...s,
+        subscription_fee: s.subscription_fee !== undefined && s.subscription_fee !== null ? Number(s.subscription_fee) : Number(planPriceMap[s.plan_id] || 0)
+      }))
       const totalShops = shops.length
       const activeShops = shops.filter(s => s.status === 'active').length
       const totalUsers = usersRes.count || usersRes.data?.length || 0

@@ -34,18 +34,21 @@ export default function Analytics() {
     const fetchAnalytics = async () => {
         setLoading(true)
         try {
-            const [growthRes, topsRes, inactiveRes, shopsResInitial, paymentsRes] = await Promise.all([
+            let shopsRes = null
+            const withFee = await supabaseAdmin.from('shops').select('id, name, created_at, subscription_plan, subscription_fee, status, plan_id')
+            if (!withFee.error) {
+                shopsRes = withFee
+            } else {
+                shopsRes = await supabaseAdmin.from('shops').select('id, name, created_at, subscription_plan, status, plan_id')
+            }
+
+            const [growthRes, topsRes, inactiveRes, paymentsRes, plansRes] = await Promise.all([
                 supabaseAdmin.rpc('get_global_growth_stats'),
                 supabaseAdmin.rpc('get_top_performing_shops'),
                 supabaseAdmin.rpc('get_inactive_shops'),
-                supabaseAdmin.from('shops').select('id, name, created_at, subscription_plan, subscription_fee, status, plan_id, subscription_plans(name)'),
-                supabaseAdmin.from('shop_payments').select('id, amount, payment_date, payment_type')
+                supabaseAdmin.from('shop_payments').select('id, amount, payment_date, payment_type'),
+                supabaseAdmin.from('subscription_plans').select('id, name, price')
             ])
-
-            let shopsRes = shopsResInitial
-            if (shopsRes.error) {
-                shopsRes = await supabaseAdmin.from('shops').select('id, name, created_at, subscription_plan, subscription_fee, status, plan_id')
-            }
 
             if (growthRes.error) throw growthRes.error
             if (topsRes.error) throw topsRes.error
@@ -84,7 +87,15 @@ export default function Analytics() {
             })
 
             // Calculate SaaS stats
-            const rawShops = shopsRes.data || []
+            const planMap = (plansRes.data || []).reduce((acc, p) => ({ ...acc, [p.id]: p }), {})
+            const rawShops = (shopsRes.data || []).map(s => {
+                const p = s.plan_id ? planMap[s.plan_id] : null
+                return {
+                    ...s,
+                    subscription_plans: p ? { name: p.name } : null,
+                    subscription_fee: s.subscription_fee !== undefined && s.subscription_fee !== null ? Number(s.subscription_fee) : Number(p?.price || 0)
+                }
+            })
             const rawPayments = paymentsRes.data || []
 
             const activeShopsList = rawShops.filter(s => s.status === 'active' || !s.status)

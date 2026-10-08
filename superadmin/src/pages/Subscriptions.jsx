@@ -66,34 +66,45 @@ export default function Subscriptions() {
         }
 
         setLoading(true)
+        setErrorMsg('')
         try {
-            let shopsData = null
-            const joinAttempt = await supabaseAdmin
+            // 1. Fetch plans first to build plan map (name, price)
+            const { data: plansData } = await supabaseAdmin
+                .from('subscription_plans')
+                .select('id, name, price')
+
+            const planMap = (plansData || []).reduce((acc, p) => ({ ...acc, [p.id]: p }), {})
+
+            // 2. Fetch shops: try with subscription_fee first, fall back to without subscription_fee
+            let rawShops = null
+            const withFeeAttempt = await supabaseAdmin
                 .from('shops')
-                .select('id, name, phone, subscription_plan, subscription_fee, next_billing_date, status, plan_id, subscription_plans(name)')
+                .select('id, name, phone, subscription_plan, subscription_fee, next_billing_date, status, plan_id')
                 .order('name', { ascending: true })
 
-            if (!joinAttempt.error) {
-                shopsData = joinAttempt.data
+            if (!withFeeAttempt.error) {
+                rawShops = withFeeAttempt.data
             } else {
-                const plainAttempt = await supabaseAdmin
+                const withoutFeeAttempt = await supabaseAdmin
                     .from('shops')
-                    .select('id, name, phone, subscription_plan, subscription_fee, next_billing_date, status, plan_id')
+                    .select('id, name, phone, subscription_plan, next_billing_date, status, plan_id')
                     .order('name', { ascending: true })
 
-                if (plainAttempt.error) throw plainAttempt.error
-
-                const { data: plansData } = await supabaseAdmin
-                    .from('subscription_plans')
-                    .select('id, name')
-
-                const planMap = (plansData || []).reduce((acc, p) => ({ ...acc, [p.id]: p.name }), {})
-
-                shopsData = (plainAttempt.data || []).map(shop => ({
-                    ...shop,
-                    subscription_plans: shop.plan_id && planMap[shop.plan_id] ? { name: planMap[shop.plan_id] } : null
-                }))
+                if (withoutFeeAttempt.error) throw withoutFeeAttempt.error
+                rawShops = withoutFeeAttempt.data
             }
+
+            const shopsData = (rawShops || []).map(shop => {
+                const plan = shop.plan_id && planMap[shop.plan_id] ? planMap[shop.plan_id] : null
+                const planPrice = plan?.price || 0
+                return {
+                    ...shop,
+                    subscription_plans: plan ? { name: plan.name, price: planPrice } : null,
+                    subscription_fee: shop.subscription_fee !== undefined && shop.subscription_fee !== null 
+                        ? Number(shop.subscription_fee) 
+                        : Number(planPrice)
+                }
+            })
 
             setShops(shopsData)
         } catch (error) {
@@ -306,17 +317,29 @@ export default function Subscriptions() {
 
     const handleSavePlan = async (shopId) => {
         try {
+            const planId = planForm.planId ? parseInt(planForm.planId) : null
+            const chosenPlan = allPlans.find(p => p.id === planId)
             let updates = {
-                plan_id: planForm.planId || null,
-                subscription_fee: parseFloat(planForm.fee)
+                plan_id: planId,
+                subscription_plan: chosenPlan?.name || undefined,
+                subscription_fee: parseFloat(planForm.fee) || 0
             }
 
-            const { error } = await supabaseAdmin
+            let { error } = await supabaseAdmin
                 .from('shops')
                 .update(updates)
                 .eq('id', shopId)
 
-            if (error) throw error
+            if (error && (error.message?.includes('subscription_fee') || error.code === '42703')) {
+                delete updates.subscription_fee
+                const retryRes = await supabaseAdmin
+                    .from('shops')
+                    .update(updates)
+                    .eq('id', shopId)
+                if (retryRes.error) throw retryRes.error
+            } else if (error) {
+                throw error
+            }
 
             await logAction({
                 actor_id: user?.id,
