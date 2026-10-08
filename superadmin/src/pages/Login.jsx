@@ -4,7 +4,7 @@ import { Navigate } from 'react-router-dom'
 import { KeyRound, Mail, AlertCircle, Eye, EyeOff, ShieldAlert, CheckCircle } from 'lucide-react'
 import { supabase } from '../services/supabase'
 
-const SUPERADMIN_EMAIL = 'babarjoya@gmail.com'
+const SUPERADMIN_EMAIL = 'mahatirperfumes@gmail.com'
 const SUPERADMIN_URL = import.meta.env.VITE_SUPERADMIN_URL || window.location.origin
 
 export default function Login() {

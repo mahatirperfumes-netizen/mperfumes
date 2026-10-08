@@ -139,31 +139,29 @@ function Login() {
       const hashedPassword = await hashPassword(password)
       const cleanUsername = username.trim().toLowerCase()
 
-      // Direct Superadmin authentication path for babarjoya@gmail.com
-      if (cleanUsername === 'babarjoya@gmail.com' || cleanUsername.includes('babarjoya')) {
-        if (supabaseAdmin) {
-          const { data: saUser, error: saError } = await supabaseAdmin
-            .from('users')
-            .select('*')
-            .or(`email.ilike.${cleanUsername},username.ilike.${cleanUsername}`)
-            .eq('password', hashedPassword)
-            .eq('role', 'superadmin')
-            .eq('is_active', true)
-            .maybeSingle()
+      // Direct Superadmin authentication path (checks if user is superadmin)
+      if (supabaseAdmin) {
+        const { data: saUser, error: saError } = await supabaseAdmin
+          .from('users')
+          .select('*')
+          .or(`email.ilike.${cleanUsername},username.ilike.${cleanUsername}`)
+          .eq('password', hashedPassword)
+          .eq('role', 'superadmin')
+          .eq('is_active', true)
+          .maybeSingle()
 
-          if (!saError && saUser) {
-            login({
-              id: saUser.id,
-              username: saUser.username || 'Superadmin',
-              email: saUser.email || cleanUsername,
-              role: 'superadmin',
-              shop_id: null,
-              permissions: []
-            })
-            localStorage.setItem('user_pw_hash', hashedPassword)
-            navigate('/admin')
-            return
-          }
+        if (!saError && saUser) {
+          login({
+            id: saUser.id,
+            username: saUser.username || 'Superadmin',
+            email: saUser.email || cleanUsername,
+            role: 'superadmin',
+            shop_id: null,
+            permissions: []
+          })
+          localStorage.setItem('user_pw_hash', hashedPassword)
+          navigate('/admin')
+          return
         }
       }
 
