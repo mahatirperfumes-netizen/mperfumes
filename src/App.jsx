@@ -83,6 +83,11 @@ function App() {
             </Route>
             <Route path="/admin/reset-password" element={<ResetPassword />} />
 
+            {/* /superadmin aliases */}
+            <Route path="/superadmin" element={<Navigate to="/admin" replace />} />
+            <Route path="/superadmin/*" element={<Navigate to="/admin" replace />} />
+
+
             {/* ── Shop Tenant Routes (Both admin & cashier/staff) ── */}
             <Route path="/dashboard" element={<ProtectedRoute><Layout><Dashboard /></Layout></ProtectedRoute>} />
             <Route path="/pos" element={<ProtectedRoute requiredModule="pos" allowedRoles={['admin', 'manager', 'cashier']}><Layout><POS /></Layout></ProtectedRoute>} />

@@ -1,15 +1,10 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "app": {
-      "root": ".",
-      "framework": "vite"
-    },
-    "superadmin": {
-      "root": "superadmin",
-      "framework": "vite"
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
-  },
+  ],
   "headers": [
     {
       "source": "/sw.js",
@@ -36,20 +31,6 @@
           "value": "DENY"
         }
       ]
-    }
-  ],
-  "rewrites": [
-    {
-      "source": "/superadmin/(.*)",
-      "destination": {
-        "service": "superadmin"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "app"
-      }
     }
   ]
 }
