@@ -33,13 +33,35 @@ export default function ShopsList() {
 
     setLoading(true)
     try {
-      // 1. Fetch shops
-      const { data: shopsData, error: shopsError } = await supabaseAdmin
+      // 1. Fetch shops with resilient fallback if foreign key relation is not in PostgREST cache
+      let shopsData = null
+      const joinAttempt = await supabaseAdmin
         .from('shops')
         .select('*, subscription_plans(name)')
         .order('created_at', { ascending: false })
 
-      if (shopsError) throw shopsError
+      if (!joinAttempt.error) {
+        shopsData = joinAttempt.data
+      } else {
+        // Fallback: fetch shops directly and load plans separately
+        const plainAttempt = await supabaseAdmin
+          .from('shops')
+          .select('*')
+          .order('created_at', { ascending: false })
+
+        if (plainAttempt.error) throw plainAttempt.error
+
+        const { data: plansData } = await supabaseAdmin
+          .from('subscription_plans')
+          .select('id, name')
+
+        const planMap = (plansData || []).reduce((acc, p) => ({ ...acc, [p.id]: p.name }), {})
+
+        shopsData = (plainAttempt.data || []).map(shop => ({
+          ...shop,
+          subscription_plans: shop.plan_id && planMap[shop.plan_id] ? { name: planMap[shop.plan_id] } : null
+        }))
+      }
 
       // 2. Fetch user counts per shop
       const { data: userCounts, error: countsError } = await supabaseAdmin

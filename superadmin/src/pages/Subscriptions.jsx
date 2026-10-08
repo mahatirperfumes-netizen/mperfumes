@@ -65,13 +65,35 @@ export default function Subscriptions() {
 
         setLoading(true)
         try {
-            const { data, error } = await supabaseAdmin
+            let shopsData = null
+            const joinAttempt = await supabaseAdmin
                 .from('shops')
                 .select('id, name, phone, subscription_plan, subscription_fee, next_billing_date, status, plan_id, subscription_plans(name)')
                 .order('name', { ascending: true })
 
-            if (error) throw error
-            setShops(data)
+            if (!joinAttempt.error) {
+                shopsData = joinAttempt.data
+            } else {
+                const plainAttempt = await supabaseAdmin
+                    .from('shops')
+                    .select('id, name, phone, subscription_plan, subscription_fee, next_billing_date, status, plan_id')
+                    .order('name', { ascending: true })
+
+                if (plainAttempt.error) throw plainAttempt.error
+
+                const { data: plansData } = await supabaseAdmin
+                    .from('subscription_plans')
+                    .select('id, name')
+
+                const planMap = (plansData || []).reduce((acc, p) => ({ ...acc, [p.id]: p.name }), {})
+
+                shopsData = (plainAttempt.data || []).map(shop => ({
+                    ...shop,
+                    subscription_plans: shop.plan_id && planMap[shop.plan_id] ? { name: planMap[shop.plan_id] } : null
+                }))
+            }
+
+            setShops(shopsData)
         } catch (error) {
             console.error('Fetch error:', error)
             setErrorMsg('Failed to load subscriptions: ' + error.message)
