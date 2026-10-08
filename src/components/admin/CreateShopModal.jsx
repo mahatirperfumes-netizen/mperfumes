@@ -41,11 +41,24 @@ export default function CreateShopModal({ onClose, onCreated }) {
 
   const fetchPlans = async () => {
     try {
-      const { data, error } = await supabaseAdmin
+      let { data, error } = await supabaseAdmin
         .from('subscription_plans')
-        .select('id, name, price, billing_cycle')
+        .select('id, name, price, billing_cycle, features')
         .order('price', { ascending: true })
-      if (!error) setPlans(data || [])
+
+      if (error) {
+        const fallback = await supabaseAdmin
+          .from('subscription_plans')
+          .select('id, name, price, features')
+          .order('price', { ascending: true })
+        data = fallback.data
+      }
+
+      const mapped = (data || []).map(p => ({
+        ...p,
+        billing_cycle: p.billing_cycle || p.features?.billing_cycle || 'monthly'
+      }))
+      setPlans(mapped)
     } catch (err) {
       console.error('Failed to load plans:', err)
     } finally {

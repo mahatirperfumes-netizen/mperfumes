@@ -60,7 +60,11 @@ export default function PlanManagement() {
                 .select('*')
                 .order('price', { ascending: true })
             if (error) throw error
-            setPlans(data)
+            const mapped = (data || []).map(p => ({
+                ...p,
+                billing_cycle: p.billing_cycle || p.features?.billing_cycle || 'monthly'
+            }))
+            setPlans(mapped)
         } catch (err) {
             console.error('Failed to fetch plans:', err)
         } finally {
@@ -72,11 +76,23 @@ export default function PlanManagement() {
         e.preventDefault()
         try {
             if (editingPlan) {
-                const { error } = await supabaseAdmin
+                const payload = { ...form }
+                let { error } = await supabaseAdmin
                     .from('subscription_plans')
-                    .update(form)
+                    .update(payload)
                     .eq('id', editingPlan.id)
-                if (error) throw error
+
+                if (error && (error.message?.includes('billing_cycle') || error.code === 'PGRST204' || error.code === '42703')) {
+                    delete payload.billing_cycle
+                    payload.features = { ...(payload.features || {}), billing_cycle: form.billing_cycle }
+                    const retry = await supabaseAdmin
+                        .from('subscription_plans')
+                        .update(payload)
+                        .eq('id', editingPlan.id)
+                    if (retry.error) throw retry.error
+                } else if (error) {
+                    throw error
+                }
 
                 await logAction({
                     actor_id: adminUser?.id,
@@ -87,18 +103,30 @@ export default function PlanManagement() {
                     details: form
                 })
             } else {
-                const { data, error } = await supabaseAdmin
+                const payload = { ...form }
+                let res = await supabaseAdmin
                     .from('subscription_plans')
-                    .insert([form])
+                    .insert([payload])
                     .select()
-                if (error) throw error
+
+                if (res.error && (res.error.message?.includes('billing_cycle') || res.error.code === 'PGRST204' || res.error.code === '42703')) {
+                    delete payload.billing_cycle
+                    payload.features = { ...(payload.features || {}), billing_cycle: form.billing_cycle }
+                    res = await supabaseAdmin
+                        .from('subscription_plans')
+                        .insert([payload])
+                        .select()
+                    if (res.error) throw res.error
+                } else if (res.error) {
+                    throw res.error
+                }
 
                 await logAction({
                     actor_id: adminUser?.id,
                     actor_email: adminUser?.email || adminUser?.username,
                     action_type: 'CREATE_PLAN',
                     target_type: 'PLAN',
-                    target_id: data[0].id,
+                    target_id: res.data?.[0]?.id,
                     details: form
                 })
             }
@@ -120,7 +148,7 @@ export default function PlanManagement() {
         setForm({
             name: plan.name,
             price: plan.price,
-            billing_cycle: plan.billing_cycle,
+            billing_cycle: plan.billing_cycle || plan.features?.billing_cycle || 'monthly',
             product_limit: plan.product_limit,
             user_limit: plan.user_limit,
             features: { ...DEFAULT_FEATURES, print_templates: 1, ...(plan.features || {}) }
