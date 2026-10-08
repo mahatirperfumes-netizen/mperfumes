@@ -50,13 +50,105 @@ export default function Analytics() {
                 supabaseAdmin.from('subscription_plans').select('id, name, price')
             ])
 
-            if (growthRes.error) throw growthRes.error
-            if (topsRes.error) throw topsRes.error
-            if (inactiveRes.error) throw inactiveRes.error
             if (shopsRes.error) throw shopsRes.error
             if (paymentsRes.error) throw paymentsRes.error
 
-            const rawGrowth = growthRes.data || []
+            let rawGrowth = growthRes.data || []
+            let topShopsData = topsRes.data || []
+            let inactiveShopsData = inactiveRes.data || []
+
+            // If any RPC is missing from Supabase, compute seamlessly from sales and shops tables
+            if (growthRes.error || topsRes.error || inactiveRes.error) {
+                const { data: salesData } = await supabaseAdmin
+                    .from('sales')
+                    .select('id, shop_id, total_amount, created_at')
+                    .order('created_at', { ascending: false })
+
+                const allSales = salesData || []
+
+                // 1. Fallback for Growth Stats (last 6 months)
+                if (growthRes.error) {
+                    const monthMap = {}
+                    for (let i = 5; i >= 0; i--) {
+                        const d = new Date()
+                        d.setDate(1)
+                        d.setMonth(d.getMonth() - i)
+                        const key = d.toISOString().slice(0, 7) + '-01'
+                        monthMap[key] = { month: key, gmv: 0, orders_count: 0 }
+                    }
+
+                    allSales.forEach(s => {
+                        if (!s.created_at) return
+                        const key = s.created_at.slice(0, 7) + '-01'
+                        if (monthMap[key]) {
+                            monthMap[key].gmv += Number(s.total_amount || 0)
+                            monthMap[key].orders_count += 1
+                        }
+                    })
+
+                    rawGrowth = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month))
+                }
+
+                // 2. Fallback for Top Performing Shops (last 30 days)
+                if (topsRes.error) {
+                    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+                    const shopTotals = {}
+
+                    allSales.forEach(s => {
+                        if (!s.shop_id || !s.created_at) return
+                        if (new Date(s.created_at) < thirtyDaysAgo) return
+                        const sId = s.shop_id
+                        if (!shopTotals[sId]) {
+                            const foundShop = (shopsRes.data || []).find(sh => sh.id === sId)
+                            shopTotals[sId] = {
+                                shop_id: sId,
+                                shop_name: foundShop?.name || `Shop #${sId}`,
+                                gmv: 0,
+                                order_count: 0
+                            }
+                        }
+                        shopTotals[sId].gmv += Number(s.total_amount || 0)
+                        shopTotals[sId].order_count += 1
+                    })
+
+                    topShopsData = Object.values(shopTotals)
+                        .sort((a, b) => b.gmv - a.gmv)
+                        .slice(0, 10)
+                }
+
+                // 3. Fallback for Inactive Shops (no sale in last 14 days)
+                if (inactiveRes.error) {
+                    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
+                    const lastSaleByShop = {}
+                    allSales.forEach(s => {
+                        if (!s.shop_id || !s.created_at) return
+                        const cur = lastSaleByShop[s.shop_id]
+                        if (!cur || new Date(s.created_at) > new Date(cur)) {
+                            lastSaleByShop[s.shop_id] = s.created_at
+                        }
+                    })
+
+                    inactiveShopsData = (shopsRes.data || [])
+                        .filter(sh => sh.status === 'active' || !sh.status)
+                        .filter(sh => {
+                            const last = lastSaleByShop[sh.id]
+                            return !last || new Date(last) < fourteenDaysAgo
+                        })
+                        .map(sh => ({
+                            shop_id: sh.id,
+                            shop_name: sh.name,
+                            last_sale: lastSaleByShop[sh.id] || null,
+                            owner_phone: sh.phone || 'N/A'
+                        }))
+                        .sort((a, b) => {
+                            if (!a.last_sale && !b.last_sale) return 0
+                            if (!a.last_sale) return -1
+                            if (!b.last_sale) return 1
+                            return new Date(a.last_sale) - new Date(b.last_sale)
+                        })
+                }
+            }
+
             const formattedGrowth = rawGrowth.map(d => ({
                 name: new Date(d.month).toLocaleDateString('en-US', { month: 'short' }),
                 gmv: Number(d.gmv),
@@ -64,8 +156,8 @@ export default function Analytics() {
             }))
 
             setGrowthData(formattedGrowth)
-            setTopShops(topsRes.data || [])
-            setInactiveShops(inactiveRes.data || [])
+            setTopShops(topShopsData)
+            setInactiveShops(inactiveShopsData)
 
             // Calculate basic stats
             const totalGMV = rawGrowth.reduce((sum, d) => sum + Number(d.gmv), 0)
