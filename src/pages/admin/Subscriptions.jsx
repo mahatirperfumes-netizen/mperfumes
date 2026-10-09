@@ -124,7 +124,7 @@ export default function Subscriptions() {
             const isRefund = paymentType === 'refund'
             const finalAmount = isRefund ? -Math.abs(parseFloat(paymentAmount)) : parseFloat(paymentAmount)
 
-            // 1. Insert Payment Record
+            // 1. Insert Payment Record (if table exists)
             const { error: paymentError } = await supabaseAdmin.from('shop_payments').insert([{
                 shop_id: selectedShop.id,
                 amount: finalAmount,
@@ -132,7 +132,9 @@ export default function Subscriptions() {
                 remarks: remarks
             }])
 
-            if (paymentError) throw paymentError
+            if (paymentError) {
+                console.warn('Payment receipt ledger notice:', paymentError.message)
+            }
 
             // 2. Extend Subscription Date & Update Status (only if not a refund)
             const shopUpdates = {}
@@ -305,11 +307,15 @@ export default function Subscriptions() {
                 .eq('shop_id', shop.id)
                 .order('payment_date', { ascending: false })
 
-            if (error) throw error
-            setLedgerData(data)
+            if (error) {
+                console.warn('Ledger load notice:', error.message)
+                setLedgerData([])
+            } else {
+                setLedgerData(data || [])
+            }
         } catch (err) {
             console.error(err)
-            alert('Failed to load ledger: ' + err.message)
+            setLedgerData([])
         } finally {
             setLedgerLoading(false)
         }

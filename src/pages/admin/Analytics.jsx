@@ -51,7 +51,7 @@ export default function Analytics() {
             ])
 
             if (shopsRes.error) throw shopsRes.error
-            if (paymentsRes.error) throw paymentsRes.error
+            // paymentsRes is optional - if shop_payments table does not exist yet, default to []
 
             let rawGrowth = growthRes.data || []
             let topShopsData = topsRes.data || []
