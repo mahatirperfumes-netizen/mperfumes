@@ -219,7 +219,9 @@ function AddProduct() {
       if (!navigator.onLine) throw new TypeError('Failed to fetch')
 
       // Strip the local UUID id — Supabase will auto-generate the integer PK
-      const { id: _localId, ...supabaseProductData } = productData
+      // Map status -> is_active because Supabase schema uses is_active (boolean)
+      const { id: _localId, status: _status, ...supabaseProductData } = productData
+      supabaseProductData.is_active = productData.status !== 'inactive'
 
       // Sanitize integer FK fields — offline-created records have UUID ids which
       // Supabase cannot cast to INTEGER. Parse to int; if it fails (UUID), set null.
@@ -246,8 +248,12 @@ function AddProduct() {
       const errMsg = error?.message || String(error)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
         // Offline: Save to Local DB and Queue Sync
-        await db.products.add(productData)
-        await addToSyncQueue('products', 'INSERT', productData)
+        const localProduct = {
+          ...productData,
+          is_active: productData.status !== 'inactive'
+        }
+        await db.products.add(localProduct)
+        await addToSyncQueue('products', 'INSERT', localProduct)
         await recordAuditLog(
           'PRODUCT_ADDED',
           'products',

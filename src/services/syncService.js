@@ -65,15 +65,18 @@ export const syncOfflineData = async () => {
 
             if (item.action === 'INSERT') {
                 const isArray = Array.isArray(processedData);
-                const payload = isArray ? processedData.map(d => {
+                const sanitizePayload = (d) => {
                     const obj = { ...d };
                     if (typeof obj.id === 'string' && obj.id.includes('-')) delete obj.id;
+                    if (item.table === 'products') {
+                        if (obj.status !== undefined && obj.is_active === undefined) {
+                            obj.is_active = obj.status !== 'inactive';
+                        }
+                        delete obj.status;
+                    }
                     return obj;
-                }) : (() => {
-                    const obj = { ...processedData };
-                    if (typeof obj.id === 'string' && obj.id.includes('-')) delete obj.id;
-                    return obj;
-                })();
+                };
+                const payload = isArray ? processedData.map(sanitizePayload) : sanitizePayload(processedData);
 
                 let { data: resData, error: err } = await supabase.from(item.table).insert(payload).select();
 
@@ -160,6 +163,12 @@ export const syncOfflineData = async () => {
             } else if (item.action === 'UPDATE') {
                 const dataObj = Array.isArray(processedData) ? processedData[0] : processedData;
                 const { id, ...updateData } = dataObj;
+                if (item.table === 'products') {
+                    if (updateData.status !== undefined && updateData.is_active === undefined) {
+                        updateData.is_active = updateData.status !== 'inactive';
+                    }
+                    delete updateData.status;
+                }
                 if (id) {
                     ({ error } = await supabase.from(item.table).update(updateData).eq('id', id));
                 } else {

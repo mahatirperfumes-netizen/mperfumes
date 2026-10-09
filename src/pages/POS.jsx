@@ -355,14 +355,21 @@ function POS() {
     if (!navigator.onLine) return;
     try {
       const [p, c, cu, b, s] = await Promise.all([
-        supabase.from('products').select('*, categories(name)').eq('shop_id', user.shop_id).or('status.eq.active,status.is.null'),
+        supabase.from('products').select('*, categories(name)').eq('shop_id', user.shop_id).or('is_active.eq.true,is_active.is.null'),
         supabase.from('categories').select('*').eq('shop_id', user.shop_id),
         supabase.from('customers').select('*').eq('shop_id', user.shop_id).order('name'),
         supabase.from('brands').select('*').eq('shop_id', user.shop_id).order('name'),
         supabase.from('shops').select('*').eq('id', user.shop_id).maybeSingle()
       ])
 
-      if (p.data) await db.products.bulkPut(JSON.parse(JSON.stringify(p.data)))
+      if (p.data) {
+        const normalized = p.data.map(prod => ({
+          ...prod,
+          status: prod.status || (prod.is_active !== false ? 'active' : 'inactive'),
+          is_active: prod.is_active !== false
+        }))
+        await db.products.bulkPut(JSON.parse(JSON.stringify(normalized)))
+      }
       if (c.data) await db.categories.bulkPut(JSON.parse(JSON.stringify(c.data)))
       if (cu.data) await db.customers.bulkPut(JSON.parse(JSON.stringify(cu.data)))
       if (b.data) await db.brands.bulkPut(JSON.parse(JSON.stringify(b.data)))

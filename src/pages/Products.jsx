@@ -65,7 +65,13 @@ function Products() {
         db.brands.toArray(),
         db.units.toArray()
       ])
-      const myProds = lProds.filter(x => String(x.shop_id) === sid)
+      const normalizeProd = (p) => ({
+        ...p,
+        status: p.status || (p.is_active !== false ? 'active' : 'inactive'),
+        is_active: p.is_active !== false && p.status !== 'inactive'
+      })
+
+      const myProds = lProds.filter(x => String(x.shop_id) === sid).map(normalizeProd)
       const myCats = lCats.filter(x => String(x.shop_id) === sid)
       const myBrands = lBrands.filter(x => String(x.shop_id) === sid)
       const myUnits = lUnits.filter(x => String(x.shop_id) === sid)
@@ -102,7 +108,12 @@ function Products() {
 
       // Cache to local DB
       if (pData.data) {
-        await db.products.bulkPut(JSON.parse(JSON.stringify(pData.data)))
+        const normalized = pData.data.map(p => ({
+          ...p,
+          status: p.status || (p.is_active !== false ? 'active' : 'inactive'),
+          is_active: p.is_active !== false
+        }))
+        await db.products.bulkPut(JSON.parse(JSON.stringify(normalized)))
       }
       if (cData.data) {
         await db.categories.bulkPut(JSON.parse(JSON.stringify(cData.data)))
@@ -122,7 +133,12 @@ function Products() {
         db.units.toArray()
       ])
 
-      const myProds = lProds.filter(x => String(x.shop_id) === sid)
+      const normalizeProd = (p) => ({
+        ...p,
+        status: p.status || (p.is_active !== false ? 'active' : 'inactive'),
+        is_active: p.is_active !== false && p.status !== 'inactive'
+      })
+      const myProds = lProds.filter(x => String(x.shop_id) === sid).map(normalizeProd)
       const myCats = lCats.filter(x => String(x.shop_id) === sid)
       const myBrands = lBrands.filter(x => String(x.shop_id) === sid)
       const myUnits = lUnits.filter(x => String(x.shop_id) === sid)
@@ -202,7 +218,7 @@ function Products() {
         'Sale Price': p.sale_price,
         'C.Rate': p.c_rate || 0,
         'Min Thresh': p.low_stock_threshold,
-        'Status': p.status
+        'Status': p.status || (p.is_active !== false ? 'active' : 'inactive')
       }
     })
 
@@ -383,7 +399,7 @@ function Products() {
         sale_price: r.sale_price,
         c_rate: r.c_rate,
         low_stock_threshold: r.low_stock_threshold,
-        status: r.status
+        is_active: r.status !== 'inactive'
       })
     }
 
@@ -394,7 +410,15 @@ function Products() {
       return
     }
 
-    const { error } = await supabase.from('products').insert(formatted)
+    let { error } = await supabase.from('products').insert(formatted)
+    if (error && (error.code === 'PGRST204' || error.message?.includes('status'))) {
+      const sanitized = formatted.map(f => {
+        const { status: _st, ...rest } = f
+        return { ...rest, is_active: f.is_active ?? true }
+      })
+      const retry = await supabase.from('products').insert(sanitized)
+      error = retry.error
+    }
     if (error) {
       alert('Import error: ' + error.message)
     } else {
@@ -411,6 +435,7 @@ function Products() {
     if (!inlineForm.name?.trim()) return alert('Product Name is required')
     setInlineSaving(true)
     const toIntOrNull = (v) => { const n = parseInt(v); return isNaN(n) ? null : n }
+    const is_active = (inlineForm.status || 'active') !== 'inactive'
     const updates = {
       name: inlineForm.name.trim(),
       brand: inlineForm.brand || '',
@@ -420,7 +445,7 @@ function Products() {
       cost_price: parseFloat(inlineForm.cost_price) || 0,
       sale_price: parseFloat(inlineForm.sale_price) || 0,
       c_rate: parseFloat(inlineForm.c_rate) || 0,
-      status: inlineForm.status || 'active'
+      is_active
     }
     try {
       if (!navigator.onLine) throw new TypeError('Failed to fetch')
@@ -431,7 +456,11 @@ function Products() {
     } catch (error) {
       const errMsg = error?.message || String(error)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
-        await db.products.update(inlineEditId, updates)
+        const localUpdates = {
+          ...updates,
+          status: inlineForm.status || (is_active ? 'active' : 'inactive')
+        }
+        await db.products.update(inlineEditId, localUpdates)
         await addToSyncQueue('products', 'UPDATE', { id: inlineEditId, ...updates })
         setInlineEditId(null)
         fetchProducts()
@@ -891,11 +920,11 @@ function Products() {
                     )
                   })()}
                   <td className="px-6 py-4">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${product.status === 'active'
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${(product.status === 'active' || (product.is_active !== false && product.status !== 'inactive'))
                       ? 'bg-green-100 text-green-700'
                       : 'bg-gray-100 text-gray-700'
                       }`}>
-                      {product.status}
+                      {product.status || (product.is_active !== false ? 'active' : 'inactive')}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-center">

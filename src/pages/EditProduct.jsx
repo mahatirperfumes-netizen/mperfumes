@@ -79,7 +79,7 @@ function EditProduct() {
         sale_price: product.sale_price || '',
         stock_quantity: product.stock_quantity || '',
         low_stock_threshold: product.low_stock_threshold || '10',
-        status: product.status || 'active'
+        status: product.status || (product.is_active !== false ? 'active' : 'inactive')
       })
 
       const sid = String(user.shop_id)
@@ -125,7 +125,7 @@ function EditProduct() {
                 sale_price: localProd.sale_price || '',
                 stock_quantity: localProd.stock_quantity || '',
                 low_stock_threshold: localProd.low_stock_threshold || '10',
-                status: localProd.status || 'active'
+                status: localProd.status || (localProd.is_active !== false ? 'active' : 'inactive')
             })
         }
         const offlineSid = String(user.shop_id)
@@ -231,7 +231,10 @@ function EditProduct() {
     try {
       if (!navigator.onLine) throw new TypeError('Failed to fetch')
 
-      const { error } = await supabase.from('products').update(updatedProductData).eq('id', id)
+      const { status: _status, ...supabaseUpdateData } = updatedProductData
+      supabaseUpdateData.is_active = updatedProductData.status !== 'inactive'
+
+      const { error } = await supabase.from('products').update(supabaseUpdateData).eq('id', id)
       if (error) throw error
 
       alert('Product updated successfully!')
@@ -240,8 +243,12 @@ function EditProduct() {
       const errMsg = error?.message || String(error)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
         // Offline: Save to Local DB and Queue Sync
-        await db.products.update(id, updatedProductData)
-        await addToSyncQueue('products', 'UPDATE', { id, ...updatedProductData })
+        const localProduct = {
+          ...updatedProductData,
+          is_active: updatedProductData.status !== 'inactive'
+        }
+        await db.products.update(id, localProduct)
+        await addToSyncQueue('products', 'UPDATE', { id, ...localProduct })
         alert('Offline mode: Product updated locally! It will sync automatically when you are back online. 🔄')
         navigate('/products')
       } else {
