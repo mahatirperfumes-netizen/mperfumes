@@ -456,22 +456,27 @@ function Purchases() {
           {filteredProducts.length === 0 && <p className="text-gray-400 col-span-3 text-center py-10">No products found</p>}
           {filteredProducts.map(p => (
             <div key={p.id}
-              className="bg-white rounded-xl shadow-sm p-3 text-left hover:shadow-md hover:bg-blue-50 transition border border-transparent hover:border-blue-300 h-fit group relative"
+              className="bg-white dark:bg-[#1c1c1e] rounded-[16px] sm:rounded-[18px] border border-[#e5e5ea] dark:border-[#2c2c2e] p-3 sm:p-3.5 text-left shadow-[0_1px_3px_rgba(0,0,0,0.03)] hover:shadow-[0_8px_20px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_8px_20px_rgba(0,0,0,0.4)] hover:border-[#0071e3]/40 dark:hover:border-[#2997ff]/40 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.985] transition-all h-fit group relative cursor-pointer select-none"
             >
               <button
                 onClick={() => addToCart(p)}
                 className="w-full text-left"
               >
-                <p className="font-semibold text-gray-800 text-sm leading-tight group-hover:text-blue-700">{p.name}</p>
-                {p.brand && <p className="text-xs text-gray-400">{p.brand}</p>}
-                <div className="flex justify-between items-end mt-2">
-                  <p className="text-xs font-bold text-green-600">Stock: {p.stock_quantity}</p>
-                  <p className="text-xs text-gray-500">Cost: Rs.{p.cost_price}</p>
+                <p className="font-bold text-[#1d1d1f] dark:text-[#f5f5f7] text-xs sm:text-[13px] leading-snug group-hover:text-[#0071e3] dark:group-hover:text-[#2997ff] transition-colors line-clamp-2">{p.name}</p>
+                {p.brand && (
+                  <span className="inline-block mt-1 text-[9.5px] font-medium text-[#636366] dark:text-[#a1a1a6] bg-[#f5f5f7] dark:bg-[#2c2c2e] px-2 py-0.5 rounded-full border border-black/[0.04] dark:border-white/[0.06]">{p.brand}</span>
+                )}
+                <div className="flex justify-between items-baseline mt-2.5 pt-2 border-t border-[#f0f0f2] dark:border-[#2c2c2e]">
+                  <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-[#86868b] dark:text-[#98989d]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                    <span>Stock: <strong className="font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">{p.stock_quantity}</strong></span>
+                  </div>
+                  <p className="text-xs font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">Cost: Rs.{p.cost_price}</p>
                 </div>
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); openQuickView(p) }}
-                className="absolute top-2 right-2 w-6 h-6 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded-full text-xs font-bold flex items-center justify-center transition"
+                className="absolute top-2.5 right-2.5 w-7 h-7 bg-[#f5f5f7] dark:bg-[#2c2c2e] hover:bg-[#e5e5ea] dark:hover:bg-[#3a3a3c] text-[#636366] dark:text-[#a1a1a6] hover:text-[#0071e3] rounded-[8px] border border-black/[0.04] dark:border-white/[0.06] text-xs font-bold flex items-center justify-center transition active:scale-90"
                 title="Quick View"
               >
                 👁

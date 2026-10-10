@@ -18,19 +18,17 @@ const PAKISTANI_PAYMENT_PROVIDERS = [
 
 const getCategoryColor = (catName = '') => {
   const lower = String(catName || '').toLowerCase()
-  if (lower.includes('pipe') || lower.includes('fitting') || lower.includes('pvc') || lower.includes('upvc'))
-    return { border: 'border-t-emerald-500', pill: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
-  if (lower.includes('tile') || lower.includes('ceramic') || lower.includes('marble') || lower.includes('granite'))
-    return { border: 'border-t-amber-500', pill: 'bg-amber-100 text-amber-800 border-amber-200' }
-  if (lower.includes('paint') || lower.includes('chemical') || lower.includes('color') || lower.includes('distemper'))
-    return { border: 'border-t-purple-500', pill: 'bg-purple-100 text-purple-800 border-purple-200' }
-  if (lower.includes('sanitary') || lower.includes('tap') || lower.includes('shower') || lower.includes('faucet') || lower.includes('basin'))
-    return { border: 'border-t-cyan-500', pill: 'bg-cyan-100 text-cyan-800 border-cyan-200' }
-  if (lower.includes('electric') || lower.includes('wire') || lower.includes('cable') || lower.includes('switch') || lower.includes('light'))
-    return { border: 'border-t-yellow-500', pill: 'bg-yellow-100 text-yellow-800 border-yellow-200' }
-  if (lower.includes('tool') || lower.includes('hardware') || lower.includes('iron') || lower.includes('valve') || lower.includes('screw'))
-    return { border: 'border-t-slate-500', pill: 'bg-slate-100 text-slate-800 border-slate-200' }
-  return { border: 'border-t-blue-500', pill: 'bg-blue-100 text-blue-800 border-blue-200' }
+  if (lower.includes('edp') || lower.includes('parfum') || lower.includes('perfume'))
+    return { pill: 'bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border-purple-200/60 dark:border-purple-800/40', dot: 'bg-purple-500' }
+  if (lower.includes('attar') || lower.includes('oil') || lower.includes('oud'))
+    return { pill: 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200/60 dark:border-amber-800/40', dot: 'bg-amber-500' }
+  if (lower.includes('tester') || lower.includes('sample'))
+    return { pill: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200/60 dark:border-emerald-800/40', dot: 'bg-emerald-500' }
+  if (lower.includes('spray') || lower.includes('body') || lower.includes('mist'))
+    return { pill: 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border-sky-200/60 dark:border-sky-800/40', dot: 'bg-sky-500' }
+  if (lower.includes('bakhoor') || lower.includes('incense') || lower.includes('candle'))
+    return { pill: 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border-rose-200/60 dark:border-rose-800/40', dot: 'bg-rose-500' }
+  return { pill: 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-200/60 dark:border-blue-800/40', dot: 'bg-blue-500' }
 }
 
 function POS() {
@@ -1206,29 +1204,37 @@ function POS() {
             placeholder="🔍 Search products / brand (F2)..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="flex-1 px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0 shadow-sm"
+            className="flex-1 px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#1c1c1e] text-[#1d1d1f] dark:text-[#f5f5f7] placeholder-[#86868b] dark:placeholder-[#98989d] focus:outline-none focus:border-[#0071e3] focus:ring-2 focus:ring-[#0071e3]/15 min-w-0 shadow-2xs transition"
           />
-          <select value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}
-            className="px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none shadow-sm">
+          <select
+            value={selectedCategory}
+            onChange={e => setSelectedCategory(e.target.value)}
+            className="px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#1c1c1e] text-[#1d1d1f] dark:text-[#f5f5f7] focus:outline-none focus:border-[#0071e3] focus:ring-2 focus:ring-[#0071e3]/15 shadow-2xs transition"
+          >
             <option value="">All Categories</option>
             {posCategories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <select value={selectedBrand} onChange={e => setSelectedBrand(e.target.value)}
-            className="px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none shadow-sm">
+          <select
+            value={selectedBrand}
+            onChange={e => setSelectedBrand(e.target.value)}
+            className="px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#1c1c1e] text-[#1d1d1f] dark:text-[#f5f5f7] focus:outline-none focus:border-[#0071e3] focus:ring-2 focus:ring-[#0071e3]/15 shadow-2xs transition"
+          >
             <option value="">All Brands</option>
             {displayBrands.map(bName => <option key={bName} value={bName}>{bName}</option>)}
           </select>
           {selectedBrand && (
-            <button onClick={() => setShowBrandDiscount(true)}
-              className="px-3 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm transition whitespace-nowrap shadow-sm">
+            <button
+              onClick={() => setShowBrandDiscount(true)}
+              className="px-3 py-2 bg-[#ff9500] hover:bg-[#e08500] text-white rounded-xl text-sm font-semibold transition whitespace-nowrap shadow-xs active:scale-95"
+            >
               % Brand Discount
             </button>
           )}
         </div>
 
-        {/* Product Grid - High-Visibility Responsive Grid */}
+        {/* Product Grid - Apple HIG Responsive Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 overflow-y-auto flex-1 min-h-0 content-start pb-24 md:pb-0 custom-scrollbar">
-          {filtered.length === 0 && <p className="text-gray-400 col-span-full text-center py-10">No products found</p>}
+          {filtered.length === 0 && <p className="text-[#86868b] dark:text-[#98989d] col-span-full text-center py-10 font-medium">No products found</p>}
           {filtered.map(p => {
             const isOutOfStock = Number(p.stock_quantity) <= 0
             const isLowStock = !isOutOfStock && Number(p.stock_quantity) <= (p.low_stock_threshold || 5)
@@ -1239,40 +1245,40 @@ function POS() {
               <div
                 key={p.id}
                 onClick={() => { addToCart(p, parseFloat(cardQtys[p.id]) || 1); setCardQtys(prev => ({ ...prev, [p.id]: '' })) }}
-                className={`pos-product-card group bg-white rounded-xl shadow-xs hover:shadow-md p-3 text-left transition-all border cursor-pointer flex flex-col justify-between select-none relative border-t-4 ${catStyle.border} ${
+                className={`pos-product-card group bg-white dark:bg-[#1c1c1e] rounded-[16px] sm:rounded-[18px] p-3 sm:p-3.5 text-left transition-all duration-150 border cursor-pointer flex flex-col justify-between select-none relative shadow-[0_1px_3px_rgba(0,0,0,0.03)] hover:shadow-[0_8px_20px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_8px_20px_rgba(0,0,0,0.4)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.985] ${
                   isOutOfStock
-                    ? 'border-red-200 bg-red-50/20 opacity-80'
+                    ? 'border-red-200/60 dark:border-red-900/40 bg-red-50/15 dark:bg-red-950/10 opacity-70'
                     : isLowStock
-                      ? 'border-amber-200 bg-amber-50/15 hover:border-amber-400'
-                      : 'border-gray-200/80 hover:border-blue-500 hover:bg-blue-50/30'
+                      ? 'border-amber-200/80 dark:border-amber-900/40 bg-amber-50/10 dark:bg-amber-950/10 hover:border-amber-400 dark:hover:border-amber-500'
+                      : 'border-[#e5e5ea] dark:border-[#2c2c2e] hover:border-[#0071e3]/50 dark:hover:border-[#2997ff]/50 hover:bg-[#fafafa] dark:hover:bg-[#242426]'
                 }`}
               >
                 <div>
-                  {/* Row 1: Dedicated Product Name (fixed 2-line height for uniform card alignment) */}
-                  <div className="w-full min-h-[2.4rem] mb-1">
-                    <h3 className="font-bold text-gray-900 text-xs sm:text-sm leading-snug line-clamp-2 break-words w-full" title={p.name}>
+                  {/* Row 1: Dedicated Product Name (uniform card height) */}
+                  <div className="w-full min-h-[2.4rem] mb-1.5">
+                    <h3 className="font-bold text-[#1d1d1f] dark:text-[#f5f5f7] text-xs sm:text-[13px] leading-snug line-clamp-2 break-words w-full tracking-tight group-hover:text-[#0071e3] dark:group-hover:text-[#2997ff] transition-colors" title={p.name}>
                       {p.name}
                     </h3>
                   </div>
 
-                  {/* Row 2: Category & Brand Badges (dedicated row, no collision with price) */}
-                  <div className="flex items-center gap-1.5 flex-wrap min-h-[1.25rem] mb-1.5">
+                  {/* Row 2: Category & Brand Badges */}
+                  <div className="flex items-center gap-1.5 flex-wrap min-h-[1.3rem] mb-2">
                     {catName && (
-                      <span className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded border truncate max-w-[110px] ${catStyle.pill}`} title={catName}>
+                      <span className={`text-[9.5px] font-semibold px-2 py-0.5 rounded-full border truncate max-w-[110px] ${catStyle.pill}`} title={catName}>
                         {catName}
                       </span>
                     )}
                     {p.brand && (
-                      <span className="text-[9.5px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/80 truncate max-w-[110px]" title={p.brand}>
+                      <span className="text-[9.5px] font-medium text-[#636366] dark:text-[#a1a1a6] bg-[#f5f5f7] dark:bg-[#2c2c2e] px-2 py-0.5 rounded-full border border-black/[0.04] dark:border-white/[0.06] truncate max-w-[110px]" title={p.brand}>
                         {p.brand}
                       </span>
                     )}
                     {isOutOfStock ? (
-                      <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200/60 dark:border-red-900/40">
                         Out
                       </span>
                     ) : isLowStock ? (
-                      <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-900/40">
                         Low
                       </span>
                     ) : null}
@@ -1280,21 +1286,22 @@ function POS() {
                 </div>
 
                 {/* Bottom Section: Price, Stock, Cost & Quick Qty Action */}
-                <div className="pt-1.5 border-t border-gray-100 mt-auto">
-                  {/* Row 3: Dedicated Price & Stock Row (Price never breaks onto 2 lines) */}
-                  <div className="flex items-baseline justify-between gap-1 mb-1.5">
-                    <span className="font-black text-sm sm:text-base text-blue-600 tracking-tight whitespace-nowrap">
+                <div className="pt-2 border-t border-[#f0f0f2] dark:border-[#2c2c2e] mt-auto">
+                  {/* Row 3: Dedicated Price & Stock Row */}
+                  <div className="flex items-baseline justify-between gap-1 mb-2">
+                    <span className="font-black text-sm sm:text-base text-[#1d1d1f] dark:text-[#f5f5f7] tracking-tight whitespace-nowrap">
                       Rs. {Number(p.sale_price).toLocaleString()}
                     </span>
 
-                    <span className={`text-[10.5px] whitespace-nowrap font-medium ${isOutOfStock ? 'text-red-600 font-bold' : isLowStock ? 'text-amber-600 font-semibold' : 'text-gray-500'}`}>
-                      Stock: <span className="font-bold text-gray-700">{p.stock_quantity}</span>
+                    <span className="flex items-center gap-1.5 text-[10.5px] whitespace-nowrap font-medium text-[#86868b] dark:text-[#98989d]">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isOutOfStock ? 'bg-red-500' : isLowStock ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                      <span>Stock: <strong className={`font-bold ${isOutOfStock ? 'text-red-600 dark:text-red-400' : isLowStock ? 'text-amber-600 dark:text-amber-400' : 'text-[#1d1d1f] dark:text-[#f5f5f7]'}`}>{p.stock_quantity}</strong></span>
                     </span>
                   </div>
 
-                  {/* Row 4: Cost (if admin) & Quick Qty Input */}
+                  {/* Row 4: Cost (if admin/manager) & Quick Qty Input */}
                   <div className="flex items-center justify-between gap-1">
-                    <div className="text-[10px] text-gray-400 truncate min-w-0">
+                    <div className="text-[10px] text-[#86868b] dark:text-[#98989d] truncate min-w-0">
                       {(user.role === 'admin' || user.role === 'manager') && p.cost_price != null ? (
                         <span title={`Cost: Rs. ${p.cost_price}`}>Cost: {p.cost_price}</span>
                       ) : null}
@@ -1317,7 +1324,7 @@ function POS() {
                         }}
                         placeholder="Qty"
                         title="Custom quantity"
-                        className="w-12 text-[11px] font-medium text-center border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500 bg-white"
+                        className="w-11 text-[11px] font-semibold text-center bg-[#f5f5f7] dark:bg-[#2c2c2e] text-[#1d1d1f] dark:text-[#f5f5f7] border border-black/[0.06] dark:border-white/[0.08] rounded-[7px] py-1 outline-none focus:border-[#0071e3] focus:ring-1 focus:ring-[#0071e3]/30 transition"
                       />
                       <button
                         type="button"
@@ -1326,7 +1333,7 @@ function POS() {
                           setCardQtys(prev => ({ ...prev, [p.id]: '' }))
                         }}
                         title="Add to cart"
-                        className="px-2 py-0.5 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white rounded text-xs font-black transition border border-blue-200 hover:border-transparent active:scale-95"
+                        className="w-7 h-7 bg-[#0071e3] hover:bg-[#0077ed] text-white rounded-[7px] flex items-center justify-center text-sm font-bold shadow-[0_1px_3px_rgba(0,113,227,0.3)] transition active:scale-90 cursor-pointer"
                       >
                         +
                       </button>
@@ -1356,19 +1363,19 @@ function POS() {
       {showMobileCart && (
         <div className="md:hidden fixed inset-0 bg-black/50 z-40" onClick={() => setShowMobileCart(false)} />
       )}
-      <div className={`${showMobileCart ? 'fixed inset-x-2 top-2 bottom-2 z-50 flex max-h-[calc(100dvh-1rem)]' : 'hidden md:flex'} md:static md:w-96 lg:w-[410px] xl:w-[430px] flex-col gap-2 bg-gradient-to-b from-blue-50/95 via-sky-50/40 to-blue-50/80 rounded-2xl shadow-xl border-2 border-blue-200/90 p-3 h-full min-h-0 overflow-hidden shrink-0`}>
+      <div className={`${showMobileCart ? 'fixed inset-x-2 top-2 bottom-2 z-50 flex max-h-[calc(100dvh-1rem)]' : 'hidden md:flex'} md:static md:w-96 lg:w-[410px] xl:w-[430px] flex-col gap-2 bg-white dark:bg-[#1c1c1e] rounded-[20px] shadow-[0_1px_4px_rgba(0,0,0,0.04)] border border-[#e5e5ea] dark:border-[#2c2c2e] p-3.5 h-full min-h-0 overflow-hidden shrink-0`}>
 
         {/* Mobile close button */}
-        <button onClick={() => setShowMobileCart(false)} className="md:hidden self-end text-gray-400 hover:text-gray-700 text-xl font-bold -mt-1 -mr-1 p-1">✕</button>
+        <button onClick={() => setShowMobileCart(false)} className="md:hidden self-end text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-white text-xl font-bold -mt-1 -mr-1 p-1">✕</button>
 
         {/* Cart Header */}
-        <div className="border-b border-blue-200/80 pb-2 shrink-0 flex justify-between items-center gap-2">
+        <div className="border-b border-[#e5e5ea] dark:border-[#2c2c2e] pb-2 shrink-0 flex justify-between items-center gap-2">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-black text-blue-950 tracking-tight flex items-center gap-1.5">
+            <h2 className="text-sm font-black text-[#1d1d1f] dark:text-[#f5f5f7] tracking-tight flex items-center gap-1.5">
               <span>🛒 Cart</span>
-              <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">{cart.length}</span>
+              <span className="bg-[#0071e3] text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow-xs">{cart.length}</span>
             </h2>
-            {saleType === 'quotation' && <span className="text-purple-600 font-bold text-[10px] uppercase bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">Quotation</span>}
+            {saleType === 'quotation' && <span className="text-[#5856d6] font-bold text-[10px] uppercase bg-purple-50 dark:bg-purple-950/40 px-2 py-0.5 rounded-full border border-purple-200/60 dark:border-purple-800/40">Quotation</span>}
           </div>
           <div className="flex items-center gap-1.5">
             {/* Quick POS Layout Switcher */}
