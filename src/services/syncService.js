@@ -74,26 +74,35 @@ export const syncOfflineData = async () => {
                         }
                         delete obj.status;
                     }
+                    if (item.table === 'expenses') {
+                        const noteText = obj.note || obj.description || '';
+                        obj.description = noteText;
+                        delete obj.note; // Prevent schema cache failure if 'note' is not in Supabase schema
+                    }
                     return obj;
                 };
                 const payload = isArray ? processedData.map(sanitizePayload) : sanitizePayload(processedData);
 
                 let { data: resData, error: err } = await supabase.from(item.table).insert(payload).select();
 
-                // If sales table doesn't have online_provider or transaction_ref columns yet in Supabase, retry without them
-                if (err && item.table === 'sales' && (err.code === 'PGRST204' || err.code === '42703' || err.message?.includes('online_provider') || err.message?.includes('transaction_ref'))) {
-                    console.warn('SyncService: Retrying sales insert without top-level online columns (details preserved in payment_details JSONB)');
-                    const strippedPayload = isArray ? payload.map(d => {
+                // If sales table has missing columns in Supabase schema cache, retry without extended columns
+                if (err && item.table === 'sales' && (err.code === 'PGRST204' || err.code === '42703' || err.message?.includes('schema cache') || err.message?.includes('column') || err.message?.includes('online_provider') || err.message?.includes('transaction_ref') || err.message?.includes('created_by'))) {
+                    console.warn('SyncService: Retrying sales insert with baseline columns (details preserved in payment_details JSONB)');
+                    const cleanSale = (d) => {
                         const copy = { ...d };
+                        delete copy.created_by;
+                        delete copy.customer_name;
                         delete copy.online_provider;
                         delete copy.transaction_ref;
+                        delete copy.sale_type;
+                        delete copy.status;
+                        delete copy.payment_type;
+                        delete copy.paid_amount;
+                        if (!copy.amount_paid && d.paid_amount !== undefined) copy.amount_paid = d.paid_amount;
+                        if (!copy.payment_method && d.payment_type !== undefined) copy.payment_method = d.payment_type;
                         return copy;
-                    }) : (() => {
-                        const copy = { ...payload };
-                        delete copy.online_provider;
-                        delete copy.transaction_ref;
-                        return copy;
-                    })();
+                    };
+                    const strippedPayload = isArray ? payload.map(cleanSale) : cleanSale(payload);
                     const retry = await supabase.from(item.table).insert(strippedPayload).select();
                     resData = retry.data;
                     err = retry.error;
@@ -168,6 +177,12 @@ export const syncOfflineData = async () => {
                         updateData.is_active = updateData.status !== 'inactive';
                     }
                     delete updateData.status;
+                }
+                if (item.table === 'expenses') {
+                    if (updateData.note !== undefined && updateData.description === undefined) {
+                        updateData.description = updateData.note;
+                    }
+                    delete updateData.note;
                 }
                 if (id) {
                     ({ error } = await supabase.from(item.table).update(updateData).eq('id', id));

@@ -54,3 +54,33 @@ export function getPlanName() {
     return 'Trial'
   }
 }
+
+export function getBusinessMode() {
+  try {
+    const sid = getShopId()
+    const mode = (sid ? localStorage.getItem(`shop_business_mode_${sid}`) : null) || localStorage.getItem('shop_business_mode')
+    return mode || 'retailer'
+  } catch {
+    return 'retailer'
+  }
+}
+
+export function setBusinessMode(mode, sid = null) {
+  try {
+    const targetSid = sid || getShopId()
+    if (targetSid) {
+      localStorage.setItem(`shop_business_mode_${targetSid}`, mode)
+    }
+    localStorage.setItem('shop_business_mode', mode)
+  } catch (e) {
+    console.error('Failed to save business mode:', e)
+  }
+}
+
+export function isManufacturer() {
+  // Enabled if business mode is explicitly 'manufacturer' OR features contains manufacturing = true
+  const mode = getBusinessMode()
+  if (mode === 'manufacturer') return true
+  const features = getFeatures()
+  return Boolean(features?.manufacturing === true)
+}

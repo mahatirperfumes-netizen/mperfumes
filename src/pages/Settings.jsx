@@ -9,13 +9,15 @@ import { hasFeature } from '../utils/featureGate'
 import { printHTML } from '../utils/printUtils'
 import { syncOfflineData } from '../services/syncService'
 import { BUSINESS_PRESETS } from '../utils/businessPresets'
-import { Store, Tag, Receipt, ShieldCheck } from 'lucide-react'
+import { Store, Tag, Receipt, ShieldCheck, Volume2, VolumeX, Play } from 'lucide-react'
+import { getSoundConfig, toggleSoundType, testSound, setSoundEnabled } from '../utils/soundEffects'
 
 function Settings() {
   const { user } = useAuth()
   const [shop, setShop] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [soundConfig, setLocalSoundConfig] = useState(() => getSoundConfig())
   const [form, setForm] = useState(() => {
     const sid = user?.shop_id
     const saved = sid ? localStorage.getItem(`shop_settings_${sid}`) : null
@@ -852,6 +854,118 @@ function Settings() {
             </button>
           </div>
         </form>
+      </div>
+
+      {/* ── SOUND & AUDIO EFFECTS SETTINGS (APPLE HIG) ── */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="bg-gray-50 px-6 py-4 border-b flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 text-[#0071e3] flex items-center justify-center">
+              {soundConfig.master ? <Volume2 size={20} /> : <VolumeX size={20} />}
+            </div>
+            <div>
+              <h2 className="font-bold text-gray-800">Sound & Acoustic Effects</h2>
+              <p className="text-xs text-gray-400">Procedural tactile audio feedback for POS actions and navigation</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              const next = !soundConfig.master
+              setSoundEnabled(next)
+              setLocalSoundConfig(getSoundConfig())
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 cursor-pointer ${
+              soundConfig.master
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            {soundConfig.master ? '🔊 All Sounds On' : '🔇 Muted'}
+          </button>
+        </div>
+
+        <div className="p-6 divide-y divide-gray-100">
+          {[
+            {
+              id: 'click',
+              icon: '🖱️',
+              title: 'Tactile Button & Tap Clicks',
+              desc: 'Crisp haptic click when selecting buttons, checkout tabs, and cards'
+            },
+            {
+              id: 'hover',
+              icon: '👆',
+              title: 'Interactive Hover Micro-Ticks',
+              desc: 'Subtle micro-tick when hovering over clickable cards and buttons'
+            },
+            {
+              id: 'create',
+              icon: '✨',
+              title: 'Save & Create Harmonics',
+              desc: 'Uplifting C-major chord chime on creating products, saving bills, and adding stock'
+            },
+            {
+              id: 'delete',
+              icon: '🗑️',
+              title: 'Delete & Trash Drops',
+              desc: 'Deep resonant drop when deleting items, clearing carts, or voiding bills'
+            },
+            {
+              id: 'alert',
+              icon: '⚠️',
+              title: 'Alert & Notification Pings',
+              desc: 'Dual-tone attention chime for stock warnings, held bills, and notifications'
+            },
+            {
+              id: 'toggle',
+              icon: '🔘',
+              title: 'Toggle & Switch Snaps',
+              desc: 'Tactile mechanical snap when flipping checkboxes, switches, and dark mode'
+            }
+          ].map(item => (
+            <div key={item.id} className="py-3.5 first:pt-0 last:pb-0 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-xl shrink-0">{item.icon}</span>
+                <div>
+                  <p className="text-sm font-bold text-gray-800">{item.title}</p>
+                  <p className="text-xs text-gray-400">{item.desc}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => testSound(item.id)}
+                  title={`Sample ${item.title}`}
+                  className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 flex items-center gap-1 cursor-pointer transition active:scale-95"
+                >
+                  <Play size={12} className="text-blue-600 fill-blue-600" />
+                  <span className="hidden sm:inline">Test</span>
+                </button>
+
+                {/* Apple HIG iOS-Style Toggle Switch */}
+                <button
+                  type="button"
+                  disabled={!soundConfig.master}
+                  onClick={() => {
+                    toggleSoundType(item.id)
+                    setLocalSoundConfig(getSoundConfig())
+                  }}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    soundConfig.master && soundConfig[item.id] !== false ? 'bg-[#34c759]' : 'bg-gray-300'
+                  }`}
+                >
+                  <div
+                    className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ${
+                      soundConfig.master && soundConfig[item.id] !== false ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">

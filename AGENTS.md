@@ -39,3 +39,13 @@ Standalone admin: `cd superadmin`, then the same npm scripts.
 - PWA caching must not retain authenticated/private API responses across logout or account switching.
 - `README.md` is still Vite-template content; do not rely on it for setup/deployment truth. Verify environment names from code/examples without printing secret values.
 - For root changes run build/lint as feasible; run standalone admin checks when touching `superadmin/`. Report environment-limited failures distinctly from source failures.
+
+## Perfumery & Multi-Tenant Operating Model
+
+- Reference detailed specification in `TASK.md` and `PERFUMERY_AGENT_GUIDE.md`.
+- **Dual Operating Mode (Superadmin Configured):**
+  - `retailer` (Default): Retail shops purchase ready-made products directly into shelf inventory; standard POS billing. Manufacturing menus (Formulas, Batches, Bottling) are hidden.
+  - `manufacturer` (Optional): Enabled via Superadmin (`shops.business_mode = 'manufacturer'`). Unlocks Formulas, Production Batches, Bottling Runs, and Raw Material lot tracking.
+- **Strict Domain Boundary:** Purchasing raw ingredients (oils, ethanol, bottles, caps) must **never** directly increase finished perfume stock; selling a finished bottle at POS must **never** deduct raw materials. Raw materials are consumed in production batches; bottling consumes bulk liquid + packaging; sales deduct finished stock only.
+- **Feature Gating:** Always check `isManufacturer()` from `src/utils/featureGate.js` before exposing formulas, blending, or bottling workflows.
+

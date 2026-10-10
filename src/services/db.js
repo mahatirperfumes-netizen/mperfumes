@@ -152,6 +152,64 @@ db.version(11).stores({
   units: '++id, name, abbreviation, shop_id'
 });
 
+// v12: held_purchases table for offline held purchase orders
+db.version(12).stores({
+  products: 'id, name, brand, category_id, shop_id',
+  categories: 'id, name, shop_id',
+  suppliers: 'id, name, shop_id',
+  customers: 'id, name, shop_id',
+  brands: 'id, name, shop_id',
+  sales: 'id, customer_id, shop_id, created_at',
+  sale_items: 'id, sale_id, product_id',
+  purchases: 'id, supplier_id, shop_id, created_at',
+  purchase_items: 'id, purchase_id, product_id',
+  expenses: 'id, category, shop_id, date',
+  users: 'id, username, shop_id, role',
+  shops: 'id, name',
+  customer_payments: 'id, customer_id, shop_id, created_at',
+  supplier_payments: 'id, supplier_id, shop_id, created_at',
+  sync_queue: '++id, table, action, data, timestamp',
+  audit_logs: 'id, action, entity, entity_id, user_id, shop_id, timestamp',
+  held_carts: '++id, customer_id, shop_id, saved_at',
+  held_purchases: '++id, supplier_id, shop_id, saved_at',
+  trash: '++id, original_table, original_id, shop_id, deleted_at, deleted_by',
+  brand_categories: '++id, brand_id, category_id, shop_id',
+  units: '++id, name, abbreviation, shop_id'
+});
+
+// v13: perfumery manufacturing tables (items, inventory_lots, inventory_ledger, inventory_locations, formulas, production_batches, bottling_runs)
+db.version(13).stores({
+  products: 'id, name, brand, category_id, shop_id',
+  categories: 'id, name, shop_id',
+  suppliers: 'id, name, shop_id',
+  customers: 'id, name, shop_id',
+  brands: 'id, name, shop_id',
+  sales: 'id, customer_id, shop_id, created_at',
+  sale_items: 'id, sale_id, product_id',
+  purchases: 'id, supplier_id, shop_id, created_at',
+  purchase_items: 'id, purchase_id, product_id',
+  expenses: 'id, category, shop_id, date',
+  users: 'id, username, shop_id, role',
+  shops: 'id, name',
+  customer_payments: 'id, customer_id, shop_id, created_at',
+  supplier_payments: 'id, supplier_id, shop_id, created_at',
+  sync_queue: '++id, table, action, data, timestamp',
+  audit_logs: 'id, action, entity, entity_id, user_id, shop_id, timestamp',
+  held_carts: '++id, customer_id, shop_id, saved_at',
+  held_purchases: '++id, supplier_id, shop_id, saved_at',
+  trash: '++id, original_table, original_id, shop_id, deleted_at, deleted_by',
+  brand_categories: '++id, brand_id, category_id, shop_id',
+  units: '++id, name, abbreviation, shop_id',
+  items: 'id, sku, name, item_type, shop_id',
+  inventory_lots: 'id, item_id, lot_number, shop_id, status',
+  inventory_ledger: '++id, item_id, lot_id, shop_id, transaction_type, created_at',
+  inventory_locations: 'id, name, shop_id',
+  formulas: 'id, name, finished_item_id, shop_id',
+  production_batches: 'id, batch_number, formula_id, shop_id, status',
+  bottling_runs: 'id, run_number, source_batch_id, shop_id'
+});
+
+
 export const addToSyncQueue = async (table, action, data) => {
   await db.sync_queue.add({
     table,

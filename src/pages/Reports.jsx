@@ -3,14 +3,16 @@ import { supabase } from '../services/supabase'
 import { useAuth } from '../context/AuthContext'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { db } from '../services/db'
-import { hasFeature } from '../utils/featureGate'
+import { hasFeature, isManufacturer } from '../utils/featureGate'
 import UpgradeWall from '../components/UpgradeWall'
 import { printHTML, getShopBranding, brandedA4Header } from '../utils/printUtils'
+import PerfumeryTraceabilityReport from '../components/PerfumeryTraceabilityReport'
 
 function Reports() {
   const { user } = useAuth()
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState('month') // today, week, month, all
+  const [activeReportTab, setActiveReportTab] = useState('sales') // 'sales' | 'traceability'
 
   const [stats, setStats] = useState({
     grossSales: 0,
@@ -277,36 +279,65 @@ function Reports() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800">📊 Business Analytics</h1>
-          <p className="text-gray-500 text-sm">Profit, Loss and Sales performance</p>
+      {isManufacturer() && (
+        <div className="flex border-b border-gray-200 gap-6">
+          <button
+            onClick={() => setActiveReportTab('sales')}
+            className={`pb-3 text-sm font-bold border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+              activeReportTab === 'sales'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span>📊</span> Retail Sales & P&L Analytics
+          </button>
+          <button
+            onClick={() => setActiveReportTab('traceability')}
+            className={`pb-3 text-sm font-bold border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+              activeReportTab === 'traceability'
+                ? 'border-purple-600 text-purple-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span>⚗️</span> Perfumery Lot Traceability & Valuation
+          </button>
         </div>
-        <div className="flex bg-white rounded-xl shadow-sm border p-1">
-          {['today', 'week', 'month', 'year', 'all'].map(r => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${range === r ? 'bg-blue-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
-            >
-              {r.charAt(0).toUpperCase() + r.slice(1)}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={handlePrintSummary}
-          className="ml-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition font-bold text-sm shadow-sm flex items-center gap-2"
-        >
-          🖨️ Print Summary
-        </button>
-      </div>
+      )}
 
-      {loading ? (
-        <div className="py-20 text-center text-gray-400 animate-pulse text-lg">Calculating statistics...</div>
+      {activeReportTab === 'traceability' && isManufacturer() ? (
+        <PerfumeryTraceabilityReport />
       ) : (
         <>
-          {/* Main Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-800">📊 Business Analytics</h1>
+              <p className="text-gray-500 text-sm">Profit, Loss and Sales performance</p>
+            </div>
+            <div className="flex bg-white rounded-xl shadow-sm border p-1">
+              {['today', 'week', 'month', 'year', 'all'].map(r => (
+                <button
+                  key={r}
+                  onClick={() => setRange(r)}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${range === r ? 'bg-blue-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
+                >
+                  {r.charAt(0).toUpperCase() + r.slice(1)}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={handlePrintSummary}
+              className="ml-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition font-bold text-sm shadow-sm flex items-center gap-2"
+            >
+              🖨️ Print Summary
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="py-20 text-center text-gray-400 animate-pulse text-lg">Calculating statistics...</div>
+          ) : (
+            <>
+              {/* Main Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard title="Gross Sales" value={stats.grossSales} sub={`Disc: Rs. ${stats.totalDiscount}`} color="blue" />
             <StatCard title="Cost of Goods" value={stats.costOfSales} sub="Purchase value of sold items" color="orange" />
             <StatCard title="Gross Profit" value={stats.grossProfit} sub="Sales - Cost of Goods" color="emerald" />
@@ -469,6 +500,8 @@ function Reports() {
               </table>
             </div>
           </div>
+        </>
+      )}
         </>
       )}
     </div>

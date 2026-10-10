@@ -20,7 +20,6 @@ export default function Subscriptions() {
     const [ledgerData, setLedgerData] = useState([])
     const [ledgerLoading, setLedgerLoading] = useState(false)
     const [extendModalOpen, setExtendModalOpen] = useState(false)
-    const [extendDays, setExtendDays] = useState('30')
     const [targetExpiryDate, setTargetExpiryDate] = useState('')
     const [autoReactivate, setAutoReactivate] = useState(true)
     const [subFilter, setSubFilter] = useState('all')
@@ -213,7 +212,6 @@ export default function Subscriptions() {
         const d = new Date(base)
         if (type === 'days') {
             d.setDate(d.getDate() + value)
-            setExtendDays(String(value))
         } else if (type === 'months') {
             d.setMonth(d.getMonth() + value)
         } else if (type === 'years') {
@@ -281,7 +279,6 @@ export default function Subscriptions() {
         const initialDate = new Date(baseDate)
         initialDate.setDate(initialDate.getDate() + 30)
         setTargetExpiryDate(initialDate.toISOString().split('T')[0])
-        setExtendDays('30')
         setAutoReactivate(true)
         setExtendModalOpen(true)
     }

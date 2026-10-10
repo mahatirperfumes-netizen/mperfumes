@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext'
 import { db, addToSyncQueue } from '../services/db'
 import Categories from './Categories'
 import Brands from './Brands'
+import RawMaterials from './RawMaterials'
+import StorageLocations from './StorageLocations'
+import { isManufacturer } from '../utils/featureGate'
 
 // ── Default units for "Seed Defaults" button ──────────────────────────────────
 const DEFAULT_UNITS = [
@@ -247,10 +250,15 @@ function MasterData() {
     localStorage.setItem('masterDataTab', tab)
   }
 
+  const mfg = isManufacturer()
   const tabs = [
     { id: 'categories', label: '🗂️ Categories' },
     { id: 'brands', label: '🏷️ Brands' },
     { id: 'units', label: '📐 Units' },
+    ...(mfg ? [
+      { id: 'raw-materials', label: '🧪 Raw Materials & Packaging' },
+      { id: 'locations', label: '📍 Storage Locations' }
+    ] : [])
   ]
 
   return (
@@ -275,6 +283,8 @@ function MasterData() {
       {activeTab === 'categories' && <Categories />}
       {activeTab === 'brands' && <Brands />}
       {activeTab === 'units' && <UnitsTab />}
+      {mfg && activeTab === 'raw-materials' && <RawMaterials />}
+      {mfg && activeTab === 'locations' && <StorageLocations />}
     </div>
   )
 }

@@ -22,6 +22,7 @@ export default function CreateShopModal({ onClose, onCreated }) {
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
   const [businessType, setBusinessType] = useState('general')
+  const [businessMode, setBusinessMode] = useState('retailer')
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerUsername, setOwnerUsername] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
@@ -81,7 +82,7 @@ export default function CreateShopModal({ onClose, onCreated }) {
     setLoading(true)
 
     try {
-      // 1. Create the Shop with plan_id and business_type
+      // 1. Create the Shop with plan_id, business_type, and business_mode
       let shopInsert = {
         name: shopName,
         phone,
@@ -89,7 +90,8 @@ export default function CreateShopModal({ onClose, onCreated }) {
         email: ownerEmail,
         status: 'active',
         plan_id: selectedPlanId,
-        business_type: businessType
+        business_type: businessType,
+        business_mode: businessMode
       }
 
       let { data: shopData, error: shopError } = await supabaseAdmin
@@ -98,8 +100,9 @@ export default function CreateShopModal({ onClose, onCreated }) {
         .select()
         .single()
 
-      // Fallback in case business_type column is not yet migrated in Supabase
-      if (shopError && shopError.message?.includes('business_type')) {
+      // Fallback in case business_mode or business_type column is not yet migrated in Supabase
+      if (shopError && (shopError.message?.includes('business_mode') || shopError.message?.includes('business_type'))) {
+        delete shopInsert.business_mode
         delete shopInsert.business_type
         const retry = await supabaseAdmin.from('shops').insert([shopInsert]).select().single()
         if (retry.error) throw new Error('Failed to create shop: ' + retry.error.message)
@@ -321,6 +324,52 @@ export default function CreateShopModal({ onClose, onCreated }) {
                   ✓ Selected: {selectedPlan.name} — Rs. {selectedPlan.price?.toLocaleString()}/{selectedPlan.billing_cycle || 'month'}
                 </p>
               )}
+            </div>
+
+            {/* Operating Model / Business Mode */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Operating Model
+                </label>
+                <span className="text-[10px] text-slate-400 font-medium">Manufacturer vs Retailer</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBusinessMode('retailer')}
+                  className={`p-2.5 rounded-lg border text-left transition flex flex-col cursor-pointer ${
+                    businessMode === 'retailer'
+                      ? 'bg-blue-50 border-blue-500 text-blue-900 ring-1 ring-blue-500'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="text-xs font-bold flex items-center justify-between gap-1">
+                    🛍️ Retail Seller
+                    <span className="text-[9px] bg-blue-100 text-blue-700 font-semibold px-1.5 py-0.5 rounded">Default</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 mt-1 leading-tight">
+                    Purchases finished goods; fast POS checkout only.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBusinessMode('manufacturer')}
+                  className={`p-2.5 rounded-lg border text-left transition flex flex-col cursor-pointer ${
+                    businessMode === 'manufacturer'
+                      ? 'bg-purple-50 border-purple-500 text-purple-900 ring-1 ring-purple-500'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="text-xs font-bold flex items-center justify-between gap-1">
+                    ⚗️ Manufacturer
+                    <span className="text-[9px] bg-purple-100 text-purple-700 font-semibold px-1.5 py-0.5 rounded">Optional</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 mt-1 leading-tight">
+                    Raw oils, solvents, bottles, formulas, batches & bottling.
+                  </span>
+                </button>
+              </div>
             </div>
 
             {/* Business Domain / Store Type */}

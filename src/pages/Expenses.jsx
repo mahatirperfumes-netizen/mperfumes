@@ -39,23 +39,35 @@ function Expenses() {
         .eq('shop_id', user.shop_id)
         .order('created_at', { ascending: false })
 
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
 
       const { data, error } = await Promise.race([fetchPromise, timeoutPromise])
 
       if (error) throw error
       if (data) {
-        setExpenses(data)
-        calculateSummary(data)
-        const cleanData = JSON.parse(JSON.stringify(data))
+        // Normalize rows so both 'note' and 'description' properties are available
+        const normalized = data.map(exp => ({
+          ...exp,
+          note: exp.note || exp.description || '',
+          description: exp.description || exp.note || ''
+        }))
+        setExpenses(normalized)
+        calculateSummary(normalized)
+        const cleanData = JSON.parse(JSON.stringify(normalized))
         await db.expenses.bulkPut(cleanData)
       }
-    } catch (e) {
+    } catch {
       console.log('Expenses: Fetching from local DB (Offline Fallback)')
       try {
         const localData = await db.expenses.toArray()
         const sorted = localData.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
-        const filtered = sorted.filter(x => String(x.shop_id) === String(user.shop_id))
+        const filtered = sorted
+          .filter(x => String(x.shop_id) === String(user.shop_id))
+          .map(exp => ({
+            ...exp,
+            note: exp.note || exp.description || '',
+            description: exp.description || exp.note || ''
+          }))
         setExpenses(filtered)
         calculateSummary(filtered)
       } catch (err) { console.error('Local DB Expenses Error:', err) }
@@ -83,22 +95,51 @@ function Expenses() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
-    const payload = {
-      ...form,
-      amount: parseFloat(form.amount),
+    const noteText = (form.note || form.description || '').trim()
+    const amountVal = parseFloat(form.amount)
+
+    // Base payload with 'description' (the standard Supabase schema column)
+    const payloadWithDescription = {
+      category: form.category,
+      amount: amountVal,
+      description: noteText,
+      shop_id: user.shop_id
+    }
+
+    // Fallback payload with 'note' (in case the shop's DB column was created as note)
+    const payloadWithNote = {
+      category: form.category,
+      amount: amountVal,
+      note: noteText,
       shop_id: user.shop_id
     }
 
     try {
       if (!navigator.onLine) throw new TypeError('Failed to fetch')
 
-      if (editingId) {
-        const { error } = await supabase.from('expenses').update(payload).eq('id', editingId)
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('expenses').insert([payload])
-        if (error) throw error
+      const executeWrite = async (dataPayload) => {
+        if (editingId) {
+          return await supabase.from('expenses').update(dataPayload).eq('id', editingId)
+        } else {
+          return await supabase.from('expenses').insert([dataPayload])
+        }
       }
+
+      // Try with 'description' first (matches database schema)
+      let res = await executeWrite(payloadWithDescription)
+
+      // If 'description' column is not found in schema cache, fallback to 'note'
+      if (res.error && (
+        res.error.code === 'PGRST204' ||
+        res.error.code === '42703' ||
+        res.error.message?.includes('description') ||
+        res.error.message?.includes('schema cache')
+      )) {
+        res = await executeWrite(payloadWithNote)
+      }
+
+      if (res.error) throw res.error
+
       setEditingId(null)
       setForm({ category: 'Misc', amount: '', note: '' })
       setShowForm(false)
@@ -106,7 +147,15 @@ function Expenses() {
     } catch (error) {
       const errMsg = error?.message || String(error)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
-        const offlineData = editingId ? { ...payload, id: editingId } : { ...payload, id: crypto.randomUUID(), created_at: new Date().toISOString() }
+        const offlineData = {
+          category: form.category,
+          amount: amountVal,
+          description: noteText,
+          note: noteText,
+          shop_id: user.shop_id,
+          id: editingId || crypto.randomUUID(),
+          created_at: new Date().toISOString()
+        }
         const action = editingId ? 'UPDATE' : 'INSERT'
         await addToSyncQueue('expenses', action, offlineData)
         if (editingId) {
@@ -128,7 +177,7 @@ function Expenses() {
   }
 
   const handleEdit = (exp) => {
-    setForm({ category: exp.category, amount: exp.amount, note: exp.note || '' })
+    setForm({ category: exp.category, amount: exp.amount, note: exp.note || exp.description || '' })
     setEditingId(exp.id)
     setShowForm(true)
   }
@@ -405,7 +454,7 @@ function Expenses() {
                   <td className="px-6 py-4 text-sm text-gray-600 italic">{exp.note || '-'}</td>
                   <td className="px-6 py-4 text-right font-bold text-gray-900">Rs. {exp.amount.toLocaleString()}</td>
                   <td className="px-6 py-4 text-center">
-                    <div className="flex justify-center gap-3 opacity-0 group-hover:opacity-100 transition">
+                    <div className="flex justify-center gap-3">
                       <button onClick={() => handleEdit(exp)} className="text-blue-500 hover:text-blue-700 font-bold text-sm">Edit</button>
                       <button onClick={() => requestDelete([exp.id])} className="text-red-500 hover:text-red-700 font-bold text-sm">Delete</button>
                     </div>

@@ -1,0 +1,266 @@
+PERFUMERY POS & INVENTORY EXTENSION
+Developer Requirements & Implementation Brief
+For Mahatir Perfumes | Extend the existing POS; do not replace its core sales/accounting functions
+1. Project objective
+Upgrade the existing conventional POS into a perfumery-specific inventory, blending, production, bottling and sales system. The system must track purchased perfume oils, alcohol, additives, bottles, caps, sprayers, labels, boxes and other packaging from supplier receipt through formulation and production to finished perfume stock and final customer sale. Every stock movement must be traceable, costed and auditable.
+Core rule: purchasing ingredients must not directly increase finished perfume stock; selling a finished bottle must not deduct raw materials again. Raw materials are consumed when a production batch is posted, finished goods are created from that batch, and sales deduct finished goods only.
+2. Scope and design principles
+Add a linked manufacturing / recipe module to the existing POS, retaining current checkout, customers, suppliers, payment methods, tax settings and sales reports wherever possible.
+Use a perpetual inventory ledger: every receipt, transfer, adjustment, production issue, production output, sale, return and reversal creates a dated movement record.
+Never silently overwrite posted transactions. Corrections must use a reversal/adjustment with a reason, user, timestamp and reference.
+Support multiple units and controlled conversions (L, mL, kg, g, pieces). Do not assume 1 g = 1 mL for every ingredient. Store density where needed and preserve the original purchase unit.
+Support multiple storage locations, at minimum: raw-material store, packaging store, production/WIP, finished-goods store and damaged/quarantine stock. Locations can be simplified if the business currently has one room.
+Keep recipe versions, batch records, supplier lots and finished-batch traceability. The user should be able to identify which ingredient lots went into a finished product batch.
+Build for small-business practicality: quick entry, barcode/SKU support, clear warnings, exports to Excel/CSV and an easy daily reconciliation.
+3. Inventory item types and required master data
+Item type
+Examples
+Required fields / behaviour
+Perfume oil / concentrate
+Ready-to-use inspired oils, accords
+SKU, name, supplier, lot/batch no., received date, quantity, unit, unit cost, supplier, storage location, optional expiry/retest date, density if used for mass-volume conversion.
+Base ingredients
+Alcohol/ethanol, distilled water, Iso E Super, Hedione, Ambroxan solution, other additives
+SKU, material class, purchase unit, stock unit, conversion rule, lot, cost, location, safety/handling notes, optional expiry/retest date.
+Packaging components
+Bottle, cap, sprayer, collar, label, carton, insert
+SKU, component type, unit = piece, supplier lot, unit cost, stock location; track separately even when assembled into a product.
+Work in progress (WIP)
+A mixed batch awaiting maturation, filtering or QC
+Batch ID, formula version, actual input quantities, stage/status, start date, expected yield, location and loss/wastage.
+Finished goods
+Sage 50 mL, Amal 30 mL
+Sellable SKU, barcode, size, concentration/variant, batch/lot, production cost, quantity, QC/release status, shelf/location.
+Consumables / other
+Filters, gloves or cleaning consumables if tracked
+Optional stock control and cost treatment; configurable whether included in product cost.
+Do not create one generic item called “perfume material” for everything. Oils, alcohol, additives, bottles and labels must have separate stock records and costs.
+4. Core workflow A — purchasing and receiving
+Create a Purchase Order (optional but recommended) with supplier, expected items, quantity, unit, agreed cost, freight/other landed costs and expected date.
+Receive goods against the order. Record actual received quantity, purchase unit, unit price, discount, freight allocation, supplier invoice number, invoice date, payment status and storage location.
+Create a supplier lot/batch record for each received ingredient/component lot. If a supplier's lot number is absent, generate an internal lot ID and record it.
+Only confirmed receipt increases available stock. A draft PO must not change inventory.
+Allow partial deliveries, backorders, purchase returns, damaged/rejected quantities and supplier credit notes.
+Calculate landed cost using a documented method (e.g., item cost plus allocated freight/fees). Store the method and allow a manager to correct it before posting.
+Capture supplier payment/account payable in the existing accounting module if available; do not duplicate accounts payable in a disconnected module.
+5. Core workflow B — formula / recipe management
+Each sellable perfume should have a formula/Bill of Materials (BOM) with controlled versions. Example structure below is illustrative only; the developer must not hard-code these percentages.
+Formula field
+Requirement
+Product / variant
+Product name, size, target concentration, packaging configuration and formula version.
+Ingredient lines
+Ingredient SKU, target quantity or percentage, unit, permitted tolerance and optional preferred supplier/material lot rules.
+Batch target
+Target finished liquid volume or mass, number of bottles, and intended fill volume per bottle.
+Calculation method
+Allow formula by % w/w or % v/v, clearly marked per recipe. Do not mix bases silently. For mass-to-volume conversions, use an ingredient-specific density when required.
+Packaging BOM
+Bottle, cap, sprayer, label, carton and other components required per finished unit. Support optional packaging parts and different packaging variants.
+Version control
+Formula changes create a new version with effective date, author, reason and approval. Old batches remain linked to the version actually used.
+Scaling
+Scale ingredient quantities to batch size automatically; show target quantities and units before production is posted.
+Confidentiality
+Limit formula viewing/editing to authorized roles; record all edits.
+Formula calculation rule: target ingredient quantity = formula proportion × target batch basis. If the formula is by weight, all formula proportions must be applied to the target mass; if by volume, to the target volume. Any density-based conversion must be explicit and visible.
+6. Core workflow C — production / blending batch
+Start a Production Batch from a selected product and approved formula version. Assign a unique batch number, such as MP-YYYYMMDD-001.
+Enter planned batch size, planned number of bottles, production location, operator, date and notes.
+Show ingredient availability by lot and location. Warn/block if there is insufficient available stock, expired/retest-due stock, quarantined stock or a unit-conversion problem.
+Allow the operator to select the actual lot used for each ingredient and record actual quantity issued. Use FEFO (first-expiry-first-out) where expiry dates exist, otherwise FIFO, but allow authorized lot selection with a reason.
+Record actual inputs, dilution/blending notes, mixing date, maturation start/end, filtering, transfer losses, samples taken and any rework. Do not force all stages into a complex workflow if the business chooses a simple process; stages should be configurable.
+At the production posting step, deduct actual ingredient quantities from their raw-material lots and move the batch into WIP or completed liquid stock. Draft batches must not change inventory.
+Record actual usable yield, waste/loss, QC status and production notes. Compare planned versus actual yield and flag variance above a configurable tolerance.
+When bottling, consume packaging components according to actual quantities used, including damaged components, and record the number of bottles filled, rejected, samples and leftover bulk liquid.
+Create finished goods only for units that have passed the required QC/release gate. Unreleased stock must not be available for sale unless a manager explicitly overrides with an audit reason.
+Post the batch and lock its original record. Any correction uses a reversal or controlled adjustment, never a silent edit.
+7. Core workflow D — bottling and finished stock
+Support bulk liquid as a separate WIP/finished-bulk stock item, so a batch can be bottled in several sessions or sizes.
+A bottling run links to the source liquid batch and records fill size, bottle count, actual fill losses, packaging usage and resulting finished-product lots.
+Example: 1,000 mL available bulk can be bottled into 20 × 50 mL only if the recorded usable liquid supports it. The system must not create more saleable volume than available, allowing only an authorized documented tolerance.
+If one formula is sold in 30 mL and 50 mL variants, each variant has its own sellable SKU and packaging BOM; both can consume the same bulk batch.
+Finished stock must retain links to the production batch, formula version and ingredient lots for traceability.
+8. Core workflow E — POS sale, return and exchange
+At checkout, selling a finished perfume deducts the selected finished-goods SKU and, where lot tracking is enabled, the chosen finished lot. It must not deduct oils, alcohol or packaging a second time.
+Block negative finished stock by default. If backorders/negative stock are permitted, make the policy explicit and restrict it to authorized users.
+Sales returns must ask whether the returned unit is resellable, damaged, opened or quarantined. Only approved resellable units return to available stock; opened/damaged returns go to a separate non-saleable location.
+Exchanges should be recorded as a return plus a new sale, preserving stock and financial audit trails.
+Samples, testers, giveaways, staff use and marketing units must be recorded as separate stock issues with reason codes; do not disguise them as sales or unexplained stock adjustments.
+Support discounts, customer orders, COD/paid status and existing POS payment flows without breaking current functionality.
+9. Costing rules
+Use a consistent costing method, preferably moving weighted-average cost for raw materials and finished goods unless the existing POS/accounting system requires FIFO. The developer must document the chosen method and apply it consistently.
+Raw material cost consumed by a batch = actual quantity consumed × the applicable inventory cost per base unit, plus any directly attributable production costs configured by the business.
+Finished batch cost includes consumed ingredients, packaging components used, and optionally direct labour/overhead. Clearly separate actual material cost from optional labour/overhead estimates.
+Unit cost of finished goods = total batch cost allocated across good saleable units, with documented treatment for waste, samples, rejected units and remaining bulk. Do not allocate the full cost to saleable bottles while also retaining the same cost in remaining bulk.
+Purchase freight/fees should be allocated consistently to landed costs. Avoid double-counting supplier invoice cost and landed-cost additions.
+When costs change after a purchase, do not silently rewrite historical batch costs or sales margins; use the configured accounting policy and preserve transaction history.
+10. Stock ledger, traceability and controls
+Movement type
+Stock effect
+Required reference
+Purchase receipt
+Increase raw material / packaging
+Supplier, invoice, supplier lot, receiving record
+Supplier return
+Decrease raw material / packaging
+Original receipt, reason, credit note
+Production issue
+Decrease selected ingredient lots
+Production batch, formula version, operator
+WIP output / transfer
+Move stock between raw/WIP/production locations
+Batch and source/destination locations
+Bottling output
+Decrease bulk liquid and packaging; increase finished lots
+Bottling run and source batch
+Sale
+Decrease finished goods
+POS receipt, customer/order, finished lot
+Customer return
+Increase only the appropriate return/quarantine location
+Original sale, condition and decision
+Adjustment / waste / sample
+Increase or decrease stock as appropriate
+Reason code, notes, approving user
+Reversal
+Reverse a posted movement without deleting history
+Original transaction and reversal reason
+Every ledger line must store item, quantity, base unit, cost value, lot/batch, location, transaction type, reference ID, timestamp and user.
+Stock on hand must be calculated from the ledger (or reconciled to it), not maintained only as a manually editable number.
+Support physical stock counts with count sheets, variance report and manager approval before posting adjustments.
+Use role permissions: cashier, storekeeper, production operator, purchasing, manager/admin. Restrict formula edits, cost visibility, stock adjustments, transaction reversal and QC release.
+Log user, date/time, old value, new value and reason for material changes.
+11. Required reports and dashboard
+Report
+Minimum useful output
+Raw material stock
+On-hand, reserved, available, unit, location, lot, cost value, reorder level and expiry/retest date.
+Packaging stock
+Pieces on hand, consumption rate, reorder warning and supplier.
+Purchases by supplier
+Item, quantity, cost, invoice, returns, unpaid balance if integrated.
+Ingredient consumption
+Actual usage by perfume, batch, date range, operator and ingredient lot.
+Batch production sheet
+Formula/version, planned vs actual inputs, yield, waste, QC, operators and batch status.
+Batch cost & unit cost
+Ingredient, packaging and optional labour/overhead breakdown; cost per good unit.
+Finished goods
+Sellable units by SKU/size/lot/location/status; stock ageing.
+Sales and gross margin
+Units, net sales, discounts, COGS, gross profit and margin by product/variant/date.
+Low-stock / reorder
+Minimum level, average usage, lead time and suggested reorder quantity.
+Waste, samples & adjustments
+Reason, quantity, cost impact, user and approval.
+Traceability / recall
+From a finished lot, show ingredient lots and suppliers; from an ingredient lot, show every batch and finished lot it affected.
+Stock reconciliation
+Opening + receipts + production outputs/returns − issues/sales/returns etc. = closing, with ledger drill-down.
+12. Alerts and validations
+Low stock and projected shortage based on recipes and open production plans.
+Insufficient ingredient or packaging quantity before production/bottling.
+Expired or retest-due material; quarantined/rejected lots cannot be issued without authorized override.
+Unexpected yield, waste, fill-volume or stock variance beyond configurable tolerance.
+Negative stock, duplicate supplier invoice number (where appropriate), duplicate barcode/SKU and missing unit conversion.
+Finished product below minimum stock; optional suggested production quantity based on sales velocity.
+Formula changed after a batch was started; require user to confirm which approved version applies.
+13. Example end-to-end transaction (illustrative)
+Purchase: receive 500 mL of a perfume oil, 5 L of alcohol and 100 bottles, recording supplier lots and landed costs. Production: create a batch using the approved formula; the system issues the actual recorded oil and alcohol quantities from those lots. Bottling: record the bulk quantity used to fill, for example, 10 × 50 mL bottles; consume 10 bottles, 10 caps/sprayers/labels/cartons as specified by the packaging BOM. Sale: sell 1 bottle at the POS; finished stock falls by one unit, while raw-material stock remains unchanged by the sale. Traceability: open the sold finished lot and see its production batch, formula version, and the source lots of oil/alcohol/packaging.
+The quantities above illustrate the workflow only. The application must calculate quantities from the actual saved formula and actual recorded production results.
+14. Suggested data entities (developer/database design)
+Entity / table
+Purpose and key relationships
+Items / SKUs
+Master record for raw materials, packaging, bulk liquid, finished products and consumables; base unit and item type.
+Units & conversions
+Unit definitions and controlled item-specific conversion factors; density where needed.
+Suppliers & purchase documents
+Supplier, PO, receipt, invoice, supplier return, landed cost and payment references.
+Inventory lots
+Supplier lot or internal lot, received date, expiry/retest, cost, location and status.
+Inventory ledger
+Immutable movement lines for every stock transaction.
+Formulas & formula lines
+Product, version, basis (w/w or v/v), ingredient SKUs, percentages/quantities and packaging BOM.
+Production batches
+Batch ID, formula version, planned/actual quantity, operator, dates, status, yield and QC.
+Batch ingredient issues
+Actual ingredient quantity, unit, source lot, cost and production batch.
+Bottling runs
+Bulk source batch, size, count, component consumption, good/rejected units and losses.
+Finished lots
+Finished SKU/variant, production source, quantity, cost, QC/release and location.
+Sales / returns
+Existing POS sale linked to finished SKU and optionally finished lot; return condition and stock destination.
+Adjustments / approvals / audit
+Reason-coded corrections, approval workflow, reversals and audit log.
+The developer may use different table names, but the relationships and audit capabilities above are mandatory. Avoid storing formula lines, stock movements and batch records only as free-text notes.
+15. User interface requirements
+Add clear menu areas: Inventory, Purchasing, Formulas, Production Batches, Bottling, Finished Goods, QC/Release, Stock Count and Reports.
+Use searchable item pickers with SKU/name, unit, lot and available quantity visible. Show the base unit and conversion whenever an operator enters another unit.
+Provide a printable production batch sheet and a bottling sheet for use at the workbench, with batch number, ingredients, actual quantities, operator initials and QC sign-off.
+Provide fast mobile/tablet-friendly forms for receiving, weighing/measuring, bottling and stock counts.
+Show status labels such as Draft, In Production, Maturing, Awaiting QC, Released, Partially Bottled, Completed, Cancelled and Reversed.
+Allow Excel/CSV export and printable reports. Use local date/time and PKR currency formatting, configurable tax and current POS conventions.
+16. Security, backups and reliability
+Use database transactions so a production posting either completes all required inventory movements or none of them.
+Prevent duplicate posting if a user double-clicks or the network retries a request.
+Back up the database automatically and test restoration before launch.
+Maintain an audit log and restrict destructive deletion of posted transactions.
+Use role-based access, strong authentication appropriate to the existing POS, and protect supplier pricing and formula data.
+If the POS is cloud-based or multiple terminals are used, handle concurrent stock deductions safely.
+17. Implementation phases
+Phase
+Build and test
+Exit condition
+1. Discovery & data cleanup
+Review current POS, item master, units, costing, locations, purchase and sale flows; map existing records.
+Approved field map and migration plan; backup verified.
+2. Stock ledger & purchasing
+Item types, units, lots, receiving, supplier returns, locations, adjustments and ledger.
+Receipts and adjustments reconcile to stock ledger.
+3. Formula & production
+Versioned BOMs, scaling, batch records, ingredient issue, WIP and yield/waste.
+Test batch consumes exact recorded ingredient quantities once.
+4. Bottling & finished goods
+Bulk liquid, packaging BOM, bottling run, QC release and finished lots.
+Finished stock is created only from recorded yield and bottling output.
+5. POS sales & returns integration
+Sell finished SKU, returns, samples, COGS and margin.
+Sale deducts finished stock only; return is condition-controlled.
+6. Reports, permissions & go-live
+Dashboards, alerts, audit log, staff training and opening balances.
+Acceptance tests pass; staff can run one full purchase-to-sale cycle.
+18. Acceptance tests — required before payment/sign-off
+Receive a supplier delivery of oil, alcohol and bottles. Verify only received quantities increase and supplier lot/cost information is retained.
+Create a formula and scale it to a target batch. Independently verify the displayed ingredient quantities and unit conversions.
+Attempt production with insufficient oil. System must block posting or require a specifically authorized, audited exception; it must not create stock from nothing.
+Post a production batch. Raw stock must decrease by actual quantities issued; the batch must retain ingredient lot and formula-version links.
+Record waste and a lower-than-planned yield. The system must show the variance and allocate cost without creating excess finished stock.
+Bottle two different sizes from one bulk batch. Verify bulk liquid and each packaging component decrease correctly and finished SKUs increase by actual good units.
+Sell one finished bottle. Finished stock and COGS must decrease/increase correctly according to the costing policy; raw material must not be deducted again.
+Return an opened bottle. It must not automatically return to sellable stock.
+Open a finished lot and trace back to all ingredient lots and suppliers; open a supplier ingredient lot and trace forward to affected finished lots.
+Reverse a posted transaction with a reason. Original and reversal must both remain visible and stock must reconcile.
+Run a physical count and post an approved variance. Ledger, on-hand stock and reports must agree.
+Verify cashier permissions cannot edit formulas, costs, posted production batches or stock adjustments without authorization.
+19. Questions the developer must answer before coding
+What technology/database does the current POS use, and can it support transaction-safe stock ledger entries and lot tracking?
+How are existing products, purchase units, stock quantities, costs, sales and returns stored? What data migration is needed?
+Will raw materials be measured mainly by mass (g/kg), volume (mL/L), or both? Which ingredients need density values?
+Should costing use moving weighted average or FIFO, and how does this align with the current accounting records?
+Will production include maturation/WIP stages, or should the first release use a simpler batch-to-bulk-to-bottle flow?
+Which packaging parts are mandatory for each product/size, and which are optional (tester, gift box, sample, etc.)?
+How will opening stock and opening costs be verified and signed off before go-live?
+20. Definition of done
+The extension is complete only when Mahatir Perfumes can trace a supplier purchase through ingredient lots, formula version, production batch, bottling run, finished product lot and POS sale; reconcile all stock movements; calculate finished-product costs using a documented policy; prevent accidental double deductions and unexplained negative stock; and export clear operational and profitability reports. A visually attractive interface without accurate ledger logic, traceability and acceptance-test evidence is not sufficient.
+Appendix A — simple daily operating checklist
+Receive and label every delivery before placing it into available stock.
+Check the correct lot and unit before issuing ingredients to a batch.
+Record actual quantities, not only planned quantities.
+Record losses, samples, testers, damaged packaging and rework with reason codes.
+Do not sell a finished lot before QC/release if the business uses a release gate.
+Reconcile cash/POS sales and perform scheduled cycle counts.
+Review low-stock, expiry/retest, batch variance and negative-stock alerts.

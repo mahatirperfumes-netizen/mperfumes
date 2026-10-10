@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
-import { hasFeature } from '../utils/featureGate'
+import { hasFeature, isManufacturer } from '../utils/featureGate'
 import UpgradeWall from '../components/UpgradeWall'
 import { supabase } from '../services/supabase'
 import { useAuth } from '../context/AuthContext'
 import { db, addToSyncQueue } from '../services/db'
+import RawPurchasesView from '../components/RawPurchasesView'
 
 function Purchases() {
   const { user } = useAuth()
+  const mfg = isManufacturer()
+  const [purchaseMode, setPurchaseMode] = useState(mfg ? 'raw' : 'finished')
   const [products, setProducts] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [brands, setBrands] = useState([])
@@ -373,16 +376,53 @@ function Purchases() {
   if (!hasFeature('purchases')) return <UpgradeWall feature="purchases" />
 
   return (
-    <div className="flex flex-col md:flex-row gap-4 overflow-hidden" style={{ height: 'calc(100vh - 112px)' }}>
-
-      {/* LEFT: Products */}
-      <div className="flex-1 flex flex-col gap-3 min-w-0">
-
-        {/* Header */}
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold text-gray-800">📥 Stock Purchase</h1>
-          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">{cart.length} items in cart</span>
+    <div className="flex flex-col h-[calc(100vh-112px)] overflow-hidden">
+      {/* Dual Mode Switcher for Manufacturers */}
+      {mfg && (
+        <div className="flex items-center gap-2 mb-3 bg-white p-1.5 rounded-xl border border-gray-200 shrink-0 shadow-xs">
+          <button
+            type="button"
+            onClick={() => setPurchaseMode('raw')}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+              purchaseMode === 'raw'
+                ? 'bg-purple-600 text-white shadow-xs'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <span>🧪</span>
+            <span>Raw Materials &amp; Packaging (Oils, Bottles, Chemicals)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setPurchaseMode('finished')}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+              purchaseMode === 'finished'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <span>🛍️</span>
+            <span>Ready-Made Products (Direct Shelf Stock)</span>
+          </button>
         </div>
+      )}
+
+      {/* Raw Materials Mode */}
+      {mfg && purchaseMode === 'raw' ? (
+        <div className="flex-1 overflow-hidden min-h-0">
+          <RawPurchasesView suppliers={suppliers} onPurchaseCompleted={fetchData} />
+        </div>
+      ) : (
+        /* Finished Goods Standard Purchase Mode */
+        <div className="flex-1 flex flex-col md:flex-row gap-4 overflow-hidden min-h-0">
+          {/* LEFT: Products */}
+          <div className="flex-1 flex flex-col gap-3 min-w-0">
+
+            {/* Header */}
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold text-gray-800">📥 Stock Purchase</h1>
+              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">{cart.length} items in cart</span>
+            </div>
 
         {/* Search + Filters */}
         <div className="flex gap-2 flex-wrap">
@@ -431,7 +471,7 @@ function Purchases() {
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); openQuickView(p) }}
-                className="absolute top-2 right-2 w-6 h-6 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded-full text-xs font-bold flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+                className="absolute top-2 right-2 w-6 h-6 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded-full text-xs font-bold flex items-center justify-center transition"
                 title="Quick View"
               >
                 👁
@@ -585,6 +625,8 @@ function Purchases() {
           </div>
         </div>
       </div>
+    </div>
+  )}
 
       {/* Quick View Modal */}
       {quickViewProduct && (

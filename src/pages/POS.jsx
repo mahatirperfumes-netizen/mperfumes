@@ -840,22 +840,34 @@ function POS() {
 
       // Resilient fallback if user hasn't run the SQL migration query in Supabase yet
       if (saleError && (
+        saleError.code === 'PGRST204' ||
+        saleError.code === '42703' ||
+        saleError.message?.includes('schema cache') ||
         saleError.message?.includes('online_provider') ||
         saleError.message?.includes('transaction_ref') ||
-        saleError.code === 'PGRST204' ||
-        saleError.code === '42703'
+        saleError.message?.includes('created_by') ||
+        saleError.message?.includes('column')
       )) {
-        console.warn('POS: Top-level online_provider/transaction_ref columns not found in database yet. Falling back to JSONB payment_details storage.')
-        const fallbackSaleData = { ...saleData }
-        delete fallbackSaleData.online_provider
-        delete fallbackSaleData.transaction_ref
+        console.warn('POS: Column missing in Supabase schema cache. Retrying sales with baseline schema...', saleError.message)
+        const fallbackSaleData = {
+          shop_id: user.shop_id,
+          user_id: user.id || null,
+          customer_id: toIntOrNull(customerId),
+          total_amount: subtotal,
+          discount: totalDiscount,
+          net_amount: subtotal - totalDiscount,
+          amount_paid: saleType === 'quotation' ? 0 : totalPaid,
+          payment_method: primaryPaymentMethod,
+          payment_details: finalPayments,
+          created_at: saleData.created_at || new Date().toISOString()
+        }
         const retryRes = await supabase.from('sales').insert([fallbackSaleData]).select().single()
         sale = retryRes.data
         saleError = retryRes.error
       }
 
       if (saleError) throw saleError
-      finalSale = sale;
+      finalSale = { ...saleData, ...sale };
 
       const items = cart.map(i => ({
         sale_id: sale.id,
@@ -867,7 +879,29 @@ function POS() {
         line_total: i.custom_price * i.qty,
         returned_qty: 0,
       }))
-      const { data: resItems, error: itemsError } = await supabase.from('sale_items').insert(items).select()
+      let { data: resItems, error: itemsError } = await supabase.from('sale_items').insert(items).select()
+
+      // Resilient fallback for sale_items if schema cache is missing newer columns
+      if (itemsError && (
+        itemsError.code === 'PGRST204' ||
+        itemsError.code === '42703' ||
+        itemsError.message?.includes('schema cache') ||
+        itemsError.message?.includes('column')
+      )) {
+        console.warn('POS: Column missing in sale_items schema cache. Retrying with baseline columns...', itemsError.message)
+        const fallbackItems = cart.map(i => ({
+          sale_id: sale.id,
+          product_id: toIntOrNull(i.id),
+          quantity: i.qty,
+          price: i.custom_price,
+          subtotal: i.custom_price * i.qty,
+          returned_qty: 0,
+        }))
+        const retryItems = await supabase.from('sale_items').insert(fallbackItems).select()
+        resItems = retryItems.data
+        itemsError = retryItems.error
+      }
+
       if (itemsError) throw itemsError
 
       // Mirror to local DB so Sales history / ledger shows up immediately without reload
@@ -1213,27 +1247,23 @@ function POS() {
                       : 'border-gray-200/80 hover:border-blue-500 hover:bg-blue-50/30'
                 }`}
               >
-                {/* Row 1: Dedicated Product Name (100% visible, multi-line wrapping allowed) */}
-                <div className="w-full mb-1">
-                  <h3 className="font-bold text-gray-900 text-xs sm:text-sm leading-snug break-words w-full" title={p.name}>
-                    {p.name}
-                  </h3>
-                </div>
+                <div>
+                  {/* Row 1: Dedicated Product Name (fixed 2-line height for uniform card alignment) */}
+                  <div className="w-full min-h-[2.4rem] mb-1">
+                    <h3 className="font-bold text-gray-900 text-xs sm:text-sm leading-snug line-clamp-2 break-words w-full" title={p.name}>
+                      {p.name}
+                    </h3>
+                  </div>
 
-                {/* Row 2: Separate Price Line & Category / Brand / Stock Status Badges */}
-                <div className="flex items-center justify-between gap-1 mb-1.5 pt-1 border-t border-gray-100/70">
-                  <span className="font-black text-sm sm:text-base text-blue-600 tracking-tight">
-                    Rs. {Number(p.sale_price).toLocaleString()}
-                  </span>
-
-                  <div className="flex items-center gap-1 shrink-0">
+                  {/* Row 2: Category & Brand Badges (dedicated row, no collision with price) */}
+                  <div className="flex items-center gap-1.5 flex-wrap min-h-[1.25rem] mb-1.5">
                     {catName && (
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border truncate max-w-[75px] ${catStyle.pill}`} title={catName}>
+                      <span className={`text-[9.5px] font-bold px-1.5 py-0.5 rounded border truncate max-w-[110px] ${catStyle.pill}`} title={catName}>
                         {catName}
                       </span>
                     )}
                     {p.brand && (
-                      <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/60 truncate max-w-[80px]">
+                      <span className="text-[9.5px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/80 truncate max-w-[110px]" title={p.brand}>
                         {p.brand}
                       </span>
                     )}
@@ -1249,49 +1279,58 @@ function POS() {
                   </div>
                 </div>
 
-                {/* Row 3: Stock, Cost & Quick Qty Action */}
-                <div className="flex items-center justify-between pt-1 border-t border-gray-100 mt-0.5">
-                  <div className="text-[11px] flex items-center gap-1 text-gray-500">
-                    <span className={isOutOfStock ? 'text-red-600 font-bold' : isLowStock ? 'text-amber-600 font-semibold' : 'text-gray-500'}>
-                      Stock: <span className="font-semibold">{p.stock_quantity}</span>
+                {/* Bottom Section: Price, Stock, Cost & Quick Qty Action */}
+                <div className="pt-1.5 border-t border-gray-100 mt-auto">
+                  {/* Row 3: Dedicated Price & Stock Row (Price never breaks onto 2 lines) */}
+                  <div className="flex items-baseline justify-between gap-1 mb-1.5">
+                    <span className="font-black text-sm sm:text-base text-blue-600 tracking-tight whitespace-nowrap">
+                      Rs. {Number(p.sale_price).toLocaleString()}
                     </span>
-                    {(user.role === 'admin' || user.role === 'manager') && p.cost_price != null && (
-                      <span className="text-gray-400 text-[10px] hidden sm:inline">
-                        · Cost: {p.cost_price}
-                      </span>
-                    )}
+
+                    <span className={`text-[10.5px] whitespace-nowrap font-medium ${isOutOfStock ? 'text-red-600 font-bold' : isLowStock ? 'text-amber-600 font-semibold' : 'text-gray-500'}`}>
+                      Stock: <span className="font-bold text-gray-700">{p.stock_quantity}</span>
+                    </span>
                   </div>
 
-                  <div onClick={e => e.stopPropagation()} className="flex items-center gap-1 shrink-0">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.001"
-                      max={p.stock_quantity > 0 ? p.stock_quantity : undefined}
-                      value={cardQtys[p.id] || ''}
-                      onChange={e => setCardQtys(prev => ({ ...prev, [p.id]: e.target.value }))}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.stopPropagation();
+                  {/* Row 4: Cost (if admin) & Quick Qty Input */}
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="text-[10px] text-gray-400 truncate min-w-0">
+                      {(user.role === 'admin' || user.role === 'manager') && p.cost_price != null ? (
+                        <span title={`Cost: Rs. ${p.cost_price}`}>Cost: {p.cost_price}</span>
+                      ) : null}
+                    </div>
+
+                    <div onClick={e => e.stopPropagation()} className="flex items-center gap-1 shrink-0 ml-auto">
+                      <input
+                        type="number"
+                        step="any"
+                        min="0.001"
+                        max={p.stock_quantity > 0 ? p.stock_quantity : undefined}
+                        value={cardQtys[p.id] || ''}
+                        onChange={e => setCardQtys(prev => ({ ...prev, [p.id]: e.target.value }))}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.stopPropagation();
+                            addToCart(p, parseFloat(cardQtys[p.id]) || 1);
+                            setCardQtys(prev => ({ ...prev, [p.id]: '' }))
+                          }
+                        }}
+                        placeholder="Qty"
+                        title="Custom quantity"
+                        className="w-12 text-[11px] font-medium text-center border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
                           addToCart(p, parseFloat(cardQtys[p.id]) || 1);
                           setCardQtys(prev => ({ ...prev, [p.id]: '' }))
-                        }
-                      }}
-                      placeholder="Qty"
-                      title="Custom quantity"
-                      className="w-12 text-[11px] font-medium text-center border border-gray-200 rounded px-1 py-0.5 outline-none focus:border-blue-500 bg-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        addToCart(p, parseFloat(cardQtys[p.id]) || 1);
-                        setCardQtys(prev => ({ ...prev, [p.id]: '' }))
-                      }}
-                      title="Add to cart"
-                      className="px-2 py-0.5 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white rounded text-xs font-black transition border border-blue-200 hover:border-transparent active:scale-95"
-                    >
-                      +
-                    </button>
+                        }}
+                        title="Add to cart"
+                        className="px-2 py-0.5 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white rounded text-xs font-black transition border border-blue-200 hover:border-transparent active:scale-95"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2771,7 +2810,7 @@ function POS() {
                     ))}
                     {held.items.length > 3 && <span className="text-[10px] text-gray-400 ml-1">+{held.items.length - 3} more</span>}
                   </div>
-                  <button className="w-full mt-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold opacity-0 group-hover:opacity-100 transition">Resume Bill</button>
+                  <button className="w-full mt-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold transition">Resume Bill</button>
                 </div>
               ))}
               {heldCarts.length === 0 && (
