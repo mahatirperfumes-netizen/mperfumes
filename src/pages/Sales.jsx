@@ -6,7 +6,7 @@ import { db, addToSyncQueue, moveToTrash } from '../services/db'
 import { recordAuditLog } from '../services/auditService'
 import PasswordModal from '../components/PasswordModal'
 import { printHTML } from '../utils/printUtils'
-import { buildBillHTML } from '../utils/billTemplates'
+import { buildBillHTML, buildReturnSlipHTML } from '../utils/billTemplates'
 
 function Sales() {
   const { user } = useAuth()
@@ -25,6 +25,9 @@ function Sales() {
   const [paymentFilter, setPaymentFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('')
   const [refundType, setRefundType] = useState('cash') // 'cash' or 'credit'
+  const [restockCondition, setRestockCondition] = useState('restock') // 'restock' or 'damaged'
+  const [returnReason, setReturnReason] = useState('Customer Changed Mind')
+  const [completedReturnSlip, setCompletedReturnSlip] = useState(null)
   const [selected, setSelected] = useState([])
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [pendingDeleteIds, setPendingDeleteIds] = useState([])
@@ -112,6 +115,9 @@ function Sales() {
   const openSale = async (sale) => {
     setSelectedSale(sale)
     setReturnQtys({})
+    setCompletedReturnSlip(null)
+    setRestockCondition('restock')
+    setReturnReason('Customer Changed Mind')
     setLoadingItems(true)
     try {
       if (!navigator.onLine) throw new Error('Offline')
@@ -146,7 +152,7 @@ function Sales() {
     setLoadingItems(false)
   }
 
-  // Handle return
+  // Handle return with pro-rated discount protection, restock condition, and offline ledger sync
   const handleReturn = async () => {
     const itemsToReturn = saleItems.filter(i => returnQtys[i.id] > 0)
     if (itemsToReturn.length === 0) { alert('Return karne ke liye qty enter karo!'); return }
@@ -159,37 +165,52 @@ function Sales() {
     }
 
     setReturning(true)
+
+    // Calculate proportional discount deduction to prevent over-refunding
+    const invoiceSubtotal = saleItems.reduce((sum, it) => sum + (Number(it.unit_price || 0) * Number(it.quantity || 0)), 0)
+    const invoiceDiscount = Number(selectedSale.discount || 0)
+    const discountRatio = invoiceSubtotal > 0 ? Math.min(1, Math.max(0, invoiceDiscount / invoiceSubtotal)) : 0
+
     let totalReturnAmount = 0
+    let grossReturnAmount = 0
+    const slipId = `RET-${String(Date.now()).slice(-6)}`
 
     try {
       if (!navigator.onLine) throw new TypeError('Failed to fetch')
 
       for (const item of itemsToReturn) {
         const returnQty = parseInt(returnQtys[item.id]) || 0
-        const returnAmount = item.unit_price * returnQty
+        const origUnitPrice = Number(item.unit_price || 0)
+        const effectiveUnitPrice = Math.max(0, origUnitPrice * (1 - discountRatio))
+        const returnAmount = Math.round(effectiveUnitPrice * returnQty * 100) / 100
+        grossReturnAmount += origUnitPrice * returnQty
         totalReturnAmount += returnAmount
 
-        // Update returned_qty on sale_item
+        // 1. Update returned_qty on sale_item
+        const newRetQty = (item.returned_qty || 0) + returnQty
         await supabase.from('sale_items')
-          .update({ returned_qty: (item.returned_qty || 0) + returnQty })
+          .update({ returned_qty: newRetQty })
           .eq('id', item.id)
+        await db.sale_items.update(item.id, { returned_qty: newRetQty })
 
-        // Restore stock — fetch live stock first to avoid undefined/stale value
-        const { data: liveProduct } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).maybeSingle()
-        const currentStock = liveProduct?.stock_quantity ?? 0
-        const newStock = currentStock + returnQty
-        await supabase.from('products')
-          .update({ stock_quantity: newStock })
-          .eq('id', item.product_id)
-        // Keep local DB in sync
-        await db.products.update(item.product_id, { stock_quantity: newStock })
+        // 2. Stock Condition: Restock vs Damaged
+        if (restockCondition === 'restock') {
+          const { data: liveProduct } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).maybeSingle()
+          const currentStock = liveProduct?.stock_quantity ?? 0
+          const newStock = currentStock + returnQty
+          await supabase.from('products').update({ stock_quantity: newStock }).eq('id', item.product_id)
+          await db.products.update(item.product_id, { stock_quantity: newStock })
+        }
       }
 
-      // Update sale record total
-      const newSaleTotal = Math.max(0, (selectedSale.total_amount || 0) - totalReturnAmount)
-      await supabase.from('sales').update({ total_amount: newSaleTotal }).eq('id', selectedSale.id)
+      // 3. Update sale record total and discount proportionally
+      const discountReduction = Math.round((grossReturnAmount - totalReturnAmount) * 100) / 100
+      const newSaleTotal = Math.max(0, (selectedSale.total_amount || 0) - grossReturnAmount)
+      const newDiscount = Math.max(0, (selectedSale.discount || 0) - discountReduction)
+      await supabase.from('sales').update({ total_amount: newSaleTotal, discount: newDiscount }).eq('id', selectedSale.id)
+      await db.sales.update(selectedSale.id, { total_amount: newSaleTotal, discount: newDiscount })
 
-      // Process Refund
+      // 4. Process Refund / Customer Ledger
       if (refundType === 'credit' && selectedSale.customer_id) {
         const { data: cust } = await supabase.from('customers').select('outstanding_balance').eq('id', selectedSale.customer_id).maybeSingle()
         const newBal = Math.max(0, (cust?.outstanding_balance || 0) - totalReturnAmount)
@@ -197,44 +218,83 @@ function Sales() {
         await db.customers.update(selectedSale.customer_id, { outstanding_balance: newBal })
 
         // Log payment return in customer_payments
-        await supabase.from('customer_payments').insert([{
+        const payRec = {
           shop_id: user.shop_id,
           customer_id: selectedSale.customer_id,
           amount: -totalReturnAmount,
           payment_type: 'return',
-          note: `Return from Invoice #${String(selectedSale.id).slice(-6)} (Credited to Balance)`
-        }])
+          note: `Return #${slipId} from Inv #${String(selectedSale.id).slice(-6)} (Credited to Balance)`
+        }
+        const { data: insPay } = await supabase.from('customer_payments').insert([payRec]).select()
+        if (insPay?.[0]) await db.customer_payments.put(insPay[0])
       } else {
         // Log as refund (Cash or Walk-in)
-        await supabase.from('customer_payments').insert([{
+        const payRec = {
           shop_id: user.shop_id,
           customer_id: selectedSale.customer_id || null,
           amount: -totalReturnAmount,
           payment_type: 'refund',
-          note: `Cash Refund from Invoice #${String(selectedSale.id).slice(-6)}`
-        }])
+          note: `Cash Refund #${slipId} from Inv #${String(selectedSale.id).slice(-6)}`
+        }
+        const { data: insPay } = await supabase.from('customer_payments').insert([payRec]).select()
+        if (insPay?.[0]) await db.customer_payments.put(insPay[0])
       }
 
-      // Audit Log
+      // 5. Audit Log
       await recordAuditLog(
         'SALE_RETURN',
         'sales',
         selectedSale.id,
         {
+          slip_id: slipId,
           invoice: selectedSale.id,
           returned_amount: totalReturnAmount,
-          items: itemsToReturn.map(it => ({ name: it.product_name, qty: returnQtys[it.id] }))
+          discount_ratio: discountRatio,
+          restock_condition: restockCondition,
+          reason: returnReason,
+          items: itemsToReturn.map(it => ({
+            name: it.product_name,
+            qty: returnQtys[it.id],
+            rate: Math.max(0, Number(it.unit_price) * (1 - discountRatio))
+          }))
         },
         user.id,
         user.shop_id
       )
 
-      alert('Return successful! Invoice updated.')
+      // Create return voucher data
+      const voucherData = {
+        returnId: slipId,
+        originalInvoice: `INV-${String(selectedSale.id).slice(-8)}`,
+        returnDate: new Date().toISOString(),
+        customer: selectedSale.customers ? { name: selectedSale.customers.name, phone: selectedSale.customers.phone } : (selectedSale.customer_name ? { name: selectedSale.customer_name } : null),
+        walkInName: selectedSale.customer_name || 'Walk-in Customer',
+        cashier: user?.username || user?.name || user?.email || 'Staff',
+        items: itemsToReturn.map(it => {
+          const retQ = parseInt(returnQtys[it.id]) || 0
+          const origP = Number(it.unit_price || 0)
+          const effP = Math.max(0, origP * (1 - discountRatio))
+          return {
+            name: it.product_name,
+            returnQty: retQ,
+            unit_price: origP,
+            effectivePrice: effP,
+            returnAmount: effP * retQ
+          }
+        }),
+        totalRefund: totalReturnAmount,
+        refundType,
+        restockCondition,
+        reason: returnReason
+      }
+      setCompletedReturnSlip(voucherData)
+
+      alert(`Return successful! Voucher #${slipId} generated. Stock and ledger updated.`)
       setReturning(false)
       setReturnQtys({})
 
       // Re-fetch updated sale + items to reflect new returned_qty in modal
-      const { data: updatedSale } = await supabase.from('sales').select('*, customers(name)').eq('id', selectedSale.id).maybeSingle()
+      const { data: updatedSale } = await supabase.from('sales').select('*, customers(name, phone)').eq('id', selectedSale.id).maybeSingle()
       if (updatedSale) setSelectedSale(updatedSale)
       const { data: updatedItems } = await supabase.from('sale_items').select('*, products(name, stock_quantity)').eq('sale_id', selectedSale.id)
       if (updatedItems) {
@@ -246,35 +306,97 @@ function Sales() {
     } catch (err) {
       const errMsg = err?.message || String(err)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
-        // OFFLINE RETURN LOGIC
+        // BULLETPROOF OFFLINE RETURN LOGIC
+        totalReturnAmount = 0
+        grossReturnAmount = 0
         for (const item of itemsToReturn) {
           const returnQty = parseInt(returnQtys[item.id]) || 0
-          totalReturnAmount += item.unit_price * returnQty
+          const origUnitPrice = Number(item.unit_price || 0)
+          const effectiveUnitPrice = Math.max(0, origUnitPrice * (1 - discountRatio))
+          const returnAmount = Math.round(effectiveUnitPrice * returnQty * 100) / 100
+          grossReturnAmount += origUnitPrice * returnQty
+          totalReturnAmount += returnAmount
 
           // 1. Update local sale_item
           const newRetQty = (item.returned_qty || 0) + returnQty
           await db.sale_items.update(item.id, { returned_qty: newRetQty })
-
-          // 2. Queue the update
           await db.sync_queue.add({ table: 'sale_items', action: 'UPDATE', data: { id: item.id, returned_qty: newRetQty }, timestamp: new Date().toISOString() })
 
-          // 3. Update local stock
-          const localProd = await db.products.get(item.product_id)
-          const newStock = (localProd?.stock_quantity || 0) + returnQty
-          await db.products.update(item.product_id, { stock_quantity: newStock })
-          await db.sync_queue.add({ table: 'products', action: 'UPDATE', data: { id: item.product_id, stock_quantity: newStock }, timestamp: new Date().toISOString() })
+          // 2. Update local stock if restockable
+          if (restockCondition === 'restock') {
+            const localProd = await db.products.get(item.product_id)
+            const newStock = (localProd?.stock_quantity || 0) + returnQty
+            await db.products.update(item.product_id, { stock_quantity: newStock })
+            await db.sync_queue.add({ table: 'products', action: 'UPDATE', data: { id: item.product_id, stock_quantity: newStock }, timestamp: new Date().toISOString() })
+          }
         }
 
-        // Update local Sale total
-        const newSaleTotal = Math.max(0, (selectedSale.total_amount || 0) - totalReturnAmount)
-        await db.sales.update(selectedSale.id, { total_amount: newSaleTotal })
-        await db.sync_queue.add({ table: 'sales', action: 'UPDATE', data: { id: selectedSale.id, total_amount: newSaleTotal }, timestamp: new Date().toISOString() })
+        // 3. Update local Sale total and discount proportionally
+        const discountReduction = Math.round((grossReturnAmount - totalReturnAmount) * 100) / 100
+        const newSaleTotal = Math.max(0, (selectedSale.total_amount || 0) - grossReturnAmount)
+        const newDiscount = Math.max(0, (selectedSale.discount || 0) - discountReduction)
+        await db.sales.update(selectedSale.id, { total_amount: newSaleTotal, discount: newDiscount })
+        await db.sync_queue.add({ table: 'sales', action: 'UPDATE', data: { id: selectedSale.id, total_amount: newSaleTotal, discount: newDiscount }, timestamp: new Date().toISOString() })
 
-        alert('Offline mode: Return processed locally. Stock and Invoice updated! 🔄')
+        // 4. Update local customer & payment
+        if (refundType === 'credit' && selectedSale.customer_id) {
+          const localCust = await db.customers.get(selectedSale.customer_id)
+          const newBal = Math.max(0, (localCust?.outstanding_balance || 0) - totalReturnAmount)
+          await db.customers.update(selectedSale.customer_id, { outstanding_balance: newBal })
+          await db.sync_queue.add({ table: 'customers', action: 'UPDATE', data: { id: selectedSale.customer_id, outstanding_balance: newBal }, timestamp: new Date().toISOString() })
+
+          const payRec = {
+            shop_id: user.shop_id,
+            customer_id: selectedSale.customer_id,
+            amount: -totalReturnAmount,
+            payment_type: 'return',
+            note: `Return #${slipId} from Inv #${String(selectedSale.id).slice(-6)} (Credited to Balance)`
+          }
+          await db.customer_payments.add({ ...payRec, id: 'pay-' + Date.now(), created_at: new Date().toISOString() })
+          await db.sync_queue.add({ table: 'customer_payments', action: 'INSERT', data: payRec, timestamp: new Date().toISOString() })
+        } else {
+          const payRec = {
+            shop_id: user.shop_id,
+            customer_id: selectedSale.customer_id || null,
+            amount: -totalReturnAmount,
+            payment_type: 'refund',
+            note: `Cash Refund #${slipId} from Inv #${String(selectedSale.id).slice(-6)}`
+          }
+          await db.customer_payments.add({ ...payRec, id: 'pay-' + Date.now(), created_at: new Date().toISOString() })
+          await db.sync_queue.add({ table: 'customer_payments', action: 'INSERT', data: payRec, timestamp: new Date().toISOString() })
+        }
+
+        // Construct voucher
+        const voucherData = {
+          returnId: slipId,
+          originalInvoice: `INV-${String(selectedSale.id).slice(-8)}`,
+          returnDate: new Date().toISOString(),
+          customer: selectedSale.customers ? { name: selectedSale.customers.name, phone: selectedSale.customers.phone } : (selectedSale.customer_name ? { name: selectedSale.customer_name } : null),
+          walkInName: selectedSale.customer_name || 'Walk-in Customer',
+          cashier: user?.username || user?.name || user?.email || 'Staff',
+          items: itemsToReturn.map(it => {
+            const retQ = parseInt(returnQtys[it.id]) || 0
+            const origP = Number(it.unit_price || 0)
+            const effP = Math.max(0, origP * (1 - discountRatio))
+            return {
+              name: it.product_name,
+              returnQty: retQ,
+              unit_price: origP,
+              effectivePrice: effP,
+              returnAmount: effP * retQ
+            }
+          }),
+          totalRefund: totalReturnAmount,
+          refundType,
+          restockCondition,
+          reason: returnReason
+        }
+        setCompletedReturnSlip(voucherData)
+
+        alert(`Offline mode: Return #${slipId} processed locally! Stock & Ledger updated and queued for sync. 🔄`)
         setReturning(false)
         setReturnQtys({})
         setSelectedSale({ ...selectedSale, total_amount: newSaleTotal })
-        // Reflect updated returned_qty in modal items
         const localUpdated = await db.sale_items.where({ sale_id: selectedSale.id }).toArray().catch(() => [])
         if (localUpdated.length > 0) setSaleItems(localUpdated)
         fetchSales()
@@ -283,6 +405,25 @@ function Sales() {
         setReturning(false)
       }
     }
+  }
+
+  const printReturnSlip = (voucher) => {
+    if (!voucher) return
+    const sid = user?.shop_id
+    const savedSettings = (() => {
+      try { return JSON.parse((sid ? localStorage.getItem(`shop_settings_${sid}`) : null) || '{}') } catch (_) { return {} }
+    })()
+    const freshLogo = (sid ? localStorage.getItem(`shop_logo_${sid}`) : null) || savedSettings.logo_url || shopSettings.logo_url || ''
+    const mergedSettings = {
+      ...shopSettings,
+      ...savedSettings,
+      logo_url: freshLogo,
+      shop_id: sid,
+      print_size: (sid ? localStorage.getItem(`print_size_${sid}`) : null) || savedSettings.print_size || localStorage.getItem('print_size') || '80mm'
+    }
+    mergedSettings.name = (sid ? localStorage.getItem(`shop_name_${sid}`) : null) || mergedSettings.name || 'EdgeX POS'
+    const html = buildReturnSlipHTML(voucher, mergedSettings)
+    printHTML(html)
   }
 
   const printInvoice = (sale, items) => {
@@ -610,10 +751,30 @@ function Sales() {
                   <button onClick={() => setSelectedSale(null)} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
                 </div>
 
-                {loadingItems ? <p className="text-gray-500 text-center py-8">Loading...</p> : (
+                {loadingItems ? <p className="text-gray-500 text-center py-8">Loading...</p> : (() => {
+                  const invoiceSubtotal = saleItems.reduce((sum, it) => sum + (Number(it.unit_price || 0) * Number(it.quantity || 0)), 0)
+                  const invoiceDiscount = Number(selectedSale.discount || 0)
+                  const discountRatio = invoiceSubtotal > 0 ? Math.min(1, Math.max(0, invoiceDiscount / invoiceSubtotal)) : 0
+                  const pendingReturnTotal = saleItems.reduce((acc, item) => {
+                    const q = parseInt(returnQtys[item.id]) || 0
+                    const origP = Number(item.unit_price || 0)
+                    const effP = Math.max(0, origP * (1 - discountRatio))
+                    return acc + (q * effP)
+                  }, 0)
+
+                  return (
                   <>
+                    {invoiceDiscount > 0 && (
+                      <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-center gap-2">
+                        <span>🏷️</span>
+                        <span>
+                          <b>Pro-rated Discount Protection Active:</b> This invoice had a discount of <b>Rs. {invoiceDiscount}</b> ({(discountRatio * 100).toFixed(1)}%). Item refunds are automatically calculated at net effective rates to prevent overpayment.
+                        </span>
+                      </div>
+                    )}
+
                     <div className="overflow-x-auto">
-                      <table className="w-full mb-4 text-sm">
+                      <table className="w-full mb-3 text-sm">
                         <thead className="bg-gray-50">
                           <tr>
                             <th className="px-3 py-2 text-left text-xs text-gray-500 whitespace-nowrap">Product</th>
@@ -621,6 +782,7 @@ function Sales() {
                             <th className="px-3 py-2 text-right text-xs text-red-400 whitespace-nowrap">Returned</th>
                             <th className="px-3 py-2 text-right text-xs text-green-600 whitespace-nowrap">Net Qty</th>
                             <th className="px-3 py-2 text-right text-xs text-gray-500 whitespace-nowrap">Rate</th>
+                            {invoiceDiscount > 0 && <th className="px-3 py-2 text-right text-xs text-amber-600 whitespace-nowrap">Refund Rate</th>}
                             <th className="px-3 py-2 text-right text-xs text-gray-500 whitespace-nowrap">Net Amount</th>
                             <th className="px-3 py-2 text-center text-xs text-gray-500 whitespace-nowrap">Return Qty</th>
                           </tr>
@@ -629,7 +791,9 @@ function Sales() {
                           {saleItems.map(item => {
                             const returnedQty = item.returned_qty || 0
                             const netQty = item.quantity - returnedQty
-                            const netAmount = netQty * Number(item.unit_price)
+                            const origUnitPrice = Number(item.unit_price)
+                            const effectiveRate = Math.max(0, origUnitPrice * (1 - discountRatio))
+                            const netAmount = netQty * origUnitPrice
                             const maxReturn = netQty
                             const fullyReturned = netQty <= 0
                             return (
@@ -643,21 +807,21 @@ function Sales() {
                                   {returnedQty > 0 ? `- ${returnedQty}` : '—'}
                                 </td>
                                 <td className="px-3 py-2 text-right font-bold text-gray-800 whitespace-nowrap">{netQty}</td>
-                                <td className="px-3 py-2 text-right text-gray-600 whitespace-nowrap">Rs. {Number(item.unit_price).toFixed(0)}</td>
+                                <td className="px-3 py-2 text-right text-gray-600 whitespace-nowrap">Rs. {origUnitPrice.toFixed(0)}</td>
+                                {invoiceDiscount > 0 && (
+                                  <td className="px-3 py-2 text-right font-semibold text-amber-700 whitespace-nowrap">
+                                    Rs. {effectiveRate.toFixed(0)}
+                                  </td>
+                                )}
                                 <td className="px-3 py-2 text-right font-semibold whitespace-nowrap">
                                   Rs. {netAmount.toFixed(0)}
-                                  {returnedQty > 0 && (
-                                    <div className="text-[10px] text-gray-400 font-normal">
-                                      orig: Rs. {(item.quantity * Number(item.unit_price)).toFixed(0)}
-                                    </div>
-                                  )}
                                 </td>
                                 <td className="px-3 py-2 text-center whitespace-nowrap">
                                   {maxReturn > 0 ? (
                                     <input type="number" min="0" max={maxReturn}
                                       value={returnQtys[item.id] || ''}
                                       onChange={e => setReturnQtys(prev => ({ ...prev, [item.id]: e.target.value }))}
-                                      className="w-16 border rounded px-2 py-1 text-center text-sm" placeholder="0" />
+                                      className="w-16 border rounded px-2 py-1 text-center text-sm focus:ring-2 focus:ring-red-400 outline-none" placeholder="0" />
                                   ) : <span className="text-xs text-gray-400">Done</span>}
                                 </td>
                               </tr>
@@ -667,26 +831,82 @@ function Sales() {
                       </table>
                     </div>
 
+                    {selectedSale.sale_type !== 'quotation' && (
+                      <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-4 space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          {/* Refund Type */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Refund:</span>
+                            <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-gray-200">
+                              <label className="flex items-center gap-1 text-xs cursor-pointer font-medium text-gray-700">
+                                <input type="radio" checked={refundType === 'cash'} onChange={() => setRefundType('cash')} className="w-3.5 h-3.5 text-blue-600" />
+                                💵 Cash
+                              </label>
+                              {selectedSale.customer_id && (
+                                <label className="flex items-center gap-1 text-xs cursor-pointer font-medium text-gray-700">
+                                  <input type="radio" checked={refundType === 'credit'} onChange={() => setRefundType('credit')} className="w-3.5 h-3.5 text-orange-600" />
+                                  📒 Ledger Credit
+                                </label>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Restock Condition */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Stock:</span>
+                            <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-gray-200">
+                              <label className="flex items-center gap-1 text-xs cursor-pointer font-medium text-emerald-700">
+                                <input type="radio" checked={restockCondition === 'restock'} onChange={() => setRestockCondition('restock')} className="w-3.5 h-3.5 text-emerald-600" />
+                                📦 Restock Shelf
+                              </label>
+                              <label className="flex items-center gap-1 text-xs cursor-pointer font-medium text-red-600">
+                                <input type="radio" checked={restockCondition === 'damaged'} onChange={() => setRestockCondition('damaged')} className="w-3.5 h-3.5 text-red-600" />
+                                ⚠️ Damaged (Write-off)
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Reason & Refund Summary */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-gray-200/80">
+                          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                            <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wide shrink-0">Reason:</span>
+                            <select
+                              value={returnReason}
+                              onChange={e => setReturnReason(e.target.value)}
+                              className="text-xs bg-white border border-gray-200 rounded-lg px-2.5 py-1 text-gray-700 outline-none focus:ring-1 focus:ring-blue-500 w-full sm:w-auto"
+                            >
+                              <option value="Customer Changed Mind">Customer Changed Mind</option>
+                              <option value="Defective / Leaking Spray">Defective Spray / Leaking</option>
+                              <option value="Scent Longevity / Quality Issue">Scent Quality / Longevity Issue</option>
+                              <option value="Wrong Item Selected">Wrong Item Selected</option>
+                              <option value="Store Policy Return">Store Policy Return</option>
+                            </select>
+                          </div>
+
+                          {pendingReturnTotal > 0 && (
+                            <div className="text-right">
+                              <span className="text-xs text-gray-500">Refund Amount: </span>
+                              <span className="text-sm font-black text-red-600">Rs. {pendingReturnTotal.toFixed(0)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:justify-between sm:items-center">
                       <div className="text-sm text-gray-600">
                         <p>Total: <b>Rs. {(Number(selectedSale.total_amount) - Number(selectedSale.discount || 0)).toFixed(0)}</b></p>
                         {selectedSale.discount > 0 && <p className="text-xs text-gray-400">Discount: Rs. {selectedSale.discount}</p>}
                       </div>
                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                        {selectedSale.sale_type !== 'quotation' && (
-                          <div className="flex flex-wrap items-center gap-3 bg-gray-50 border px-3 py-1.5 rounded-lg sm:mr-2">
-                            <span className="text-[10px] font-bold text-gray-400 uppercase">Refund Type:</span>
-                            <label className="flex items-center gap-1 text-sm cursor-pointer">
-                              <input type="radio" checked={refundType === 'cash'} onChange={() => setRefundType('cash')} className="w-4 h-4 text-blue-600" />
-                              💵 Cash
-                            </label>
-                            {selectedSale.customer_id && (
-                              <label className="flex items-center gap-1 text-sm cursor-pointer">
-                                <input type="radio" checked={refundType === 'credit'} onChange={() => setRefundType('credit')} className="w-4 h-4 text-orange-600" />
-                                📒 Ledger
-                              </label>
-                            )}
-                          </div>
+                        {completedReturnSlip && (
+                          <button
+                            onClick={() => printReturnSlip(completedReturnSlip)}
+                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold transition flex items-center gap-1.5 shadow-sm shadow-emerald-100"
+                          >
+                            🧾 Print Return Voucher
+                          </button>
                         )}
                         {selectedSale.sale_type === 'quotation' && (
                           <button onClick={() => navigate(`/pos?convertQuote=${selectedSale.id}`)}
@@ -699,19 +919,22 @@ function Sales() {
                           🖨️ Print {selectedSale.sale_type === 'quotation' ? 'Quotation' : 'Invoice'}
                         </button>
                         {selectedSale.sale_type !== 'quotation' && (
-                          <button onClick={handleReturn} disabled={returning}
-                            className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm transition disabled:opacity-50">
+                          <button
+                            onClick={handleReturn}
+                            disabled={returning || pendingReturnTotal === 0}
+                            className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-semibold transition disabled:opacity-40"
+                          >
                             {returning ? 'Processing...' : '↩️ Process Return'}
                           </button>
                         )}
-                        <button onClick={() => setSelectedSale(null)}
+                        <button onClick={() => { setSelectedSale(null); setCompletedReturnSlip(null); }}
                           className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm transition">
                           Close
                         </button>
                       </div>
                     </div>
                   </>
-                )}
+                )})()}
               </div>
             </div>
           )

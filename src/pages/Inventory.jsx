@@ -181,6 +181,8 @@ function Inventory() {
   const [adjustmentNote, setAdjustmentNote] = useState('')
   const [returnProduct, setReturnProduct] = useState(null)
   const [returnQty, setReturnQty] = useState('')
+  const [returnType, setReturnType] = useState('inward') // 'inward' (+) or 'damaged' (-)
+  const [returnReason, setReturnReason] = useState('Physical Inventory Count Correction')
   const [saving, setSaving] = useState(false)
 
   // Adjust Rates modal (brand → category → %)
@@ -382,6 +384,13 @@ function Inventory() {
 
     setSaving(true)
     const qty = parseInt(returnQty)
+    if (isNaN(qty) || qty <= 0) {
+      alert('Please enter a valid quantity greater than 0')
+      setSaving(false)
+      return
+    }
+
+    const delta = returnType === 'damaged' ? -qty : qty
     let currentStock = 0
 
     try {
@@ -396,53 +405,56 @@ function Inventory() {
 
       if (fetchError || !latest) throw new Error('Product not found')
       currentStock = latest.stock_quantity || 0
-      const newTotal = currentStock + qty
+      const newTotal = Math.max(0, currentStock + delta)
 
-      // 2. Update stock
+      // 2. Update stock in Supabase and Dexie
       const { error: updateError } = await supabase
         .from('products')
         .update({ stock_quantity: newTotal })
         .eq('id', returnProduct.id)
 
       if (updateError) throw updateError
+      await db.products.update(returnProduct.id, { stock_quantity: newTotal })
 
       // 3. Audit Log
       await recordAuditLog(
-        'PRODUCT_RETURN',
+        returnType === 'damaged' ? 'STOCK_WRITE_OFF' : 'STOCK_ADJUSTMENT',
         'products',
         returnProduct.id,
         {
           product: returnProduct.name,
           old_stock: currentStock,
           new_stock: newTotal,
-          return_qty: qty,
-          note: 'Recorded product return (Robust Update)'
+          adjustment_qty: delta,
+          direction: returnType,
+          reason: returnReason,
+          note: `Stock adjustment: ${returnReason} (${delta > 0 ? '+' : ''}${delta})`
         },
         user.id,
         user.shop_id
       )
 
-      alert(`Success! ${qty} units returned. New stock: ${newTotal}`)
+      alert(`Success! Stock adjusted (${delta > 0 ? '+' : ''}${delta}). New stock: ${newTotal}`)
       setReturnProduct(null)
       setReturnQty('')
       fetchInventory()
     } catch (err) {
       const errMsg = err?.message || String(err)
       if (errMsg.includes('Failed to fetch') || !navigator.onLine) {
-        // Offline Fallback for returns
+        // Offline Fallback
         const localProd = await db.products.get(returnProduct.id)
         currentStock = localProd?.stock_quantity || 0
-        const newTotal = currentStock + qty
+        const newTotal = Math.max(0, currentStock + delta)
 
         await db.products.update(returnProduct.id, { stock_quantity: newTotal })
         await addToSyncQueue('products', 'UPDATE', { ...returnProduct, stock_quantity: newTotal })
 
-        alert(`Offline mode: ${qty} units returned locally. New stock: ${newTotal}. Will sync later! 🔄`)
+        alert(`Offline mode: Stock adjusted (${delta > 0 ? '+' : ''}${delta}) locally. New stock: ${newTotal}. Will sync later! 🔄`)
         setReturnProduct(null)
         setReturnQty('')
         fetchInventory()
       } else {
-        alert('Error recording return: ' + errMsg)
+        alert('Error adjusting stock: ' + errMsg)
       }
     } finally {
       setSaving(false)
@@ -724,8 +736,9 @@ function Inventory() {
               <button
                 onClick={() => setReturnProduct({})}
                 className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition font-bold text-xs flex items-center gap-1.5"
+                title="Adjust stock quantity with audit trail"
               >
-                🔙 Record Return
+                ⚖️ Stock Adjustment
               </button>
             )}
             {(user.role === 'admin' || user.role === 'manager') && (
@@ -962,60 +975,111 @@ function Inventory() {
           </div>
         </div>
       )}
-      {/* Record Return Modal */}
+      {/* Stock Adjustment Modal */}
       {returnProduct && (
         <div className="fixed inset-0 bg-black bg-opacity-40 flex items-start sm:items-center justify-center z-50 overflow-y-auto py-4 px-2 sm:px-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-4 sm:p-6 w-full max-w-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-4 sm:p-6 w-full max-w-md">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-bold text-gray-800">Record Product Return</h2>
+              <div>
+                <h2 className="text-xl font-bold text-gray-800">⚖️ Stock Adjustment & Audit</h2>
+                <p className="text-xs text-gray-500">Log manual inventory adjustments with audit trail</p>
+              </div>
               <button onClick={() => setReturnProduct(null)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
             </div>
             <form onSubmit={handleRecordReturn} className="space-y-4">
               <div>
-                <label className="block text-gray-700 font-medium mb-1">Select Product</label>
+                <label className="block text-gray-700 font-medium mb-1 text-sm">Select Product</label>
                 <select
                   required
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
                   value={returnProduct?.id || ''}
                   onChange={e => {
                     const p = products.find(x => String(x.id) === String(e.target.value))
                     if (p) {
                       setReturnProduct(p)
                     } else {
-                      setReturnProduct({}) // Fallback to empty object instead of undefined to keep modal open
+                      setReturnProduct({})
                     }
                   }}
                 >
                   <option value="">Choose a product...</option>
                   {products.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.brand})</option>
+                    <option key={p.id} value={p.id}>{p.name} ({p.brand}) — Stock: {p.stock_quantity ?? 0}</option>
                   ))}
                 </select>
               </div>
+
               <div>
-                <label className="block text-gray-700 font-medium mb-1">Return Quantity</label>
+                <label className="block text-gray-700 font-medium mb-1 text-sm">Adjustment Type</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReturnType('inward')}
+                    className={`py-2 px-3 rounded-lg text-xs font-bold border transition flex items-center justify-center gap-1.5 ${
+                      returnType === 'inward'
+                        ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-sm'
+                        : 'bg-gray-50 border-gray-200 text-gray-600'
+                    }`}
+                  >
+                    <span>➕</span> Stock Inward (+)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReturnType('damaged')}
+                    className={`py-2 px-3 rounded-lg text-xs font-bold border transition flex items-center justify-center gap-1.5 ${
+                      returnType === 'damaged'
+                        ? 'bg-red-50 border-red-500 text-red-700 shadow-sm'
+                        : 'bg-gray-50 border-gray-200 text-gray-600'
+                    }`}
+                  >
+                    <span>⚠️</span> Damaged / Loss (-)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-700 font-medium mb-1 text-sm">Reason / Note</label>
+                <select
+                  value={returnReason}
+                  onChange={e => setReturnReason(e.target.value)}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
+                >
+                  <option value="Physical Inventory Count Correction">Physical Inventory Count Correction</option>
+                  <option value="Found Uncounted Fragrance Stock">Found Uncounted Fragrance Stock</option>
+                  <option value="Damaged / Broken Bottle in Store">Damaged / Broken Bottle in Store</option>
+                  <option value="Expired / Evaporated Tester Bottle">Expired / Evaporated Tester Bottle</option>
+                  <option value="Supplier Non-Invoice Sample/Replacement">Supplier Non-Invoice Sample/Replacement</option>
+                  <option value="Other Manual Audit Adjustment">Other Manual Audit Adjustment</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-gray-700 font-medium mb-1 text-sm">Quantity to Adjust</label>
                 <input
                   type="number"
                   required
                   min="1"
                   value={returnQty}
                   onChange={e => setReturnQty(e.target.value)}
-                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                  placeholder="How many items returned?"
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                  placeholder="Units to add or deduct"
                 />
               </div>
-              <div className="flex gap-3">
+
+              <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
                   disabled={saving || !returnProduct?.id}
-                  className="flex-1 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-lg transition disabled:opacity-50"
+                  className={`flex-1 py-2 text-white font-bold rounded-lg transition disabled:opacity-50 text-sm ${
+                    returnType === 'damaged' ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
                 >
-                  {saving ? 'Saving...' : 'Confirm Return'}
+                  {saving ? 'Saving...' : `Confirm ${returnType === 'damaged' ? 'Deduction' : 'Adjustment'}`}
                 </button>
                 <button
                   type="button"
                   onClick={() => setReturnProduct(null)}
-                  className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg transition"
+                  className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg transition text-sm"
                 >
                   Cancel
                 </button>

@@ -721,3 +721,172 @@ export function buildSalesReportHTML(sales, saleItems, period, shopSettings) {
   <script>window.onload = function(){ window.print(); };<\/script>
   </body></html>`
 }
+
+// ── RETURN SLIP / CREDIT NOTE (Thermal 80mm & A4) ────────────
+export function buildReturnSlipHTML(ret, shopSettings = {}) {
+  const s = shopSettings
+  const isThermal = s.print_size !== 'a4'
+  const slipNo = ret.returnId || `RET-${String(Date.now()).slice(-8)}`
+  const origInv = ret.originalInvoice || 'N/A'
+  const dateStr = ret.returnDate ? new Date(ret.returnDate).toLocaleString('en-PK') : new Date().toLocaleString('en-PK')
+  const custName = ret.customer?.name ? `${ret.customer.name}${ret.customer.phone ? ' · ' + ret.customer.phone : ''}` : (ret.walkInName || 'Walk-in Customer')
+  const cashier = ret.cashier || 'Staff'
+  const reason = ret.reason || 'Customer Return'
+  const restockLabel = ret.restockCondition === 'damaged' ? '❌ Marked Damaged / Not Restocked' : '✓ Restocked to Shelf'
+  const refundMethod = ret.refundType === 'credit' ? '📒 Credited to Customer Balance' : '💵 Cash Refund Given'
+  const items = ret.items || []
+  const totalRefund = safeNum(ret.totalRefund)
+
+  if (isThermal) {
+    return `<html><head><title>Return Slip - ${slipNo}</title>
+    <style>
+      @page{size:80mm auto;margin:2mm}
+      *{box-sizing:border-box}
+      body{font-family:monospace;width:302px;margin:0 auto;padding:10px 8px;font-size:12px;background:#fff;color:#111}
+      p{margin:2px 0;line-height:1.4}
+      .c{text-align:center} .r{text-align:right} .b{font-weight:bold}
+      .dot{border-top:1px dashed #000;margin:6px 0}
+      table{width:100%;border-collapse:collapse}
+      th{font-size:11px;border-bottom:1px solid #000;padding:3px 0}
+      td{padding:4px 0;vertical-align:top}
+    </style></head><body>
+    <p class="c b" style="font-size:1.35em">${safeStr(s.name, 'Shop')}</p>
+    ${s.address ? `<p class="c" style="font-size:0.9em">${s.address}</p>` : ''}
+    ${s.phone ? `<p class="c" style="font-size:0.9em">Ph: ${s.phone}</p>` : ''}
+    <div class="dot"></div>
+    <p class="c b" style="font-size:1.15em;letter-spacing:1px;background:#000;color:#fff;padding:2px 0">RETURN VOUCHER / CREDIT NOTE</p>
+    <div class="dot"></div>
+    <p><span class="b">Slip #:</span> ${slipNo}</p>
+    <p><span class="b">Orig. Invoice:</span> ${origInv}</p>
+    <p><span class="b">Date:</span> ${dateStr}</p>
+    <p><span class="b">Customer:</span> ${custName}</p>
+    <p><span class="b">Cashier:</span> ${cashier}</p>
+    <p><span class="b">Reason:</span> ${reason}</p>
+    <p><span class="b">Stock Status:</span> ${restockLabel}</p>
+    <div class="dot"></div>
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align:left">Item Returned</th>
+          <th style="text-align:right">Qty×Rate</th>
+          <th style="text-align:right">Refund</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(i => {
+          const name = safeStr(i.name || i.product_name)
+          const qty = safeNum(i.returnQty || i.qty)
+          const rate = safeNum(i.effectivePrice ?? i.unit_price)
+          const amt = safeNum(i.returnAmount ?? (qty * rate))
+          return `<tr>
+            <td style="max-width:130px;word-break:break-word">${name}</td>
+            <td class="r">${qty}×${rate.toFixed(0)}</td>
+            <td class="r b">Rs. ${amt.toFixed(0)}</td>
+          </tr>`
+        }).join('')}
+      </tbody>
+    </table>
+    <div class="dot"></div>
+    <div style="margin:4px 0">
+      <div style="display:flex;justify-content:space-between;font-size:1.2em;font-weight:bold">
+        <span>TOTAL REFUND</span>
+        <span>Rs. ${totalRefund.toFixed(0)}</span>
+      </div>
+      <p style="margin-top:4px;font-size:0.95em;font-weight:bold;color:#222">Mode: ${refundMethod}</p>
+    </div>
+    <div class="dot"></div>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;font-size:10px;text-align:center">
+      <div style="width:45%;border-top:1px solid #444;padding-top:4px">Customer Signature</div>
+      <div style="width:45%;border-top:1px solid #444;padding-top:4px">Cashier Signature</div>
+    </div>
+    <p class="c" style="font-size:0.75em;color:#666;margin-top:12px">★ Powered by EdgeX Digital ★</p>
+    ${printScript}</body></html>`
+  }
+
+  // A4 Format
+  return `<html><head><title>Return Slip - ${slipNo}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    @page{size:A4 portrait;margin:12mm}
+    *{box-sizing:border-box;margin:0;padding:0;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+    body{font-family:'Inter',sans-serif;color:#0f172a;background:#fff;padding:20px;font-size:13px;line-height:1.5}
+    .header-box{background:#991b1b;color:#fff;padding:24px 28px;border-radius:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+    .shop-name{font-size:24px;font-weight:800}
+    .badge{background:rgba(255,255,255,0.18);padding:10px 16px;border-radius:8px;text-align:right}
+    .meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;background:#f8fafc;padding:16px 20px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:24px}
+    .meta-label{font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b}
+    .meta-val{font-size:14px;font-weight:600;color:#0f172a;margin-top:2px}
+    table{width:100%;border-collapse:collapse;margin-bottom:24px}
+    thead tr{background:#f1f5f9}
+    th{padding:10px 14px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;color:#475569;border-bottom:2px solid #cbd5e1}
+    td{padding:10px 14px;border-bottom:1px solid #f1f5f9}
+    th:not(:first-child),td:not(:first-child){text-align:right}
+    .summary-card{max-width:340px;margin-left:auto;background:#fef2f2;border:1px solid #fecaca;padding:16px 20px;border-radius:10px;margin-bottom:30px}
+    .sig-area{display:flex;justify-content:space-between;margin-top:40px;padding-top:20px}
+    .sig-box{width:220px;border-top:1.5px solid #0f172a;text-align:center;padding-top:6px;font-size:11px;font-weight:600}
+  </style></head><body>
+  <div class="header-box">
+    <div>
+      <div class="shop-name">${safeStr(s.name, 'Shop')}</div>
+      <div style="font-size:13px;opacity:0.9;margin-top:4px">${[s.address, s.phone].filter(Boolean).join(' · ')}</div>
+    </div>
+    <div class="badge">
+      <div style="font-size:11px;letter-spacing:1px;font-weight:700">CREDIT NOTE / RETURN</div>
+      <div style="font-size:20px;font-weight:800">#${slipNo}</div>
+      <div style="font-size:11px;opacity:0.9;margin-top:2px">${dateStr}</div>
+    </div>
+  </div>
+  <div class="meta-grid">
+    <div><div class="meta-label">Original Invoice</div><div class="meta-val">${origInv}</div></div>
+    <div><div class="meta-label">Customer</div><div class="meta-val">${custName}</div></div>
+    <div><div class="meta-label">Processed By</div><div class="meta-val">${cashier}</div></div>
+    <div><div class="meta-label">Return Reason</div><div class="meta-val">${reason}</div></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:30px">#</th>
+        <th>Item Description</th>
+        <th>Qty Returned</th>
+        <th>Refund Rate</th>
+        <th>Total Refund</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${items.map((i, idx) => {
+        const name = safeStr(i.name || i.product_name)
+        const qty = safeNum(i.returnQty || i.qty)
+        const rate = safeNum(i.effectivePrice ?? i.unit_price)
+        const amt = safeNum(i.returnAmount ?? (qty * rate))
+        return `<tr>
+          <td style="color:#94a3b8">${idx + 1}</td>
+          <td style="font-weight:600">${name}</td>
+          <td>${qty}</td>
+          <td>Rs. ${rate.toFixed(0)}</td>
+          <td style="font-weight:700;color:#991b1b">Rs. ${amt.toFixed(0)}</td>
+        </tr>`
+      }).join('')}
+    </tbody>
+  </table>
+  <div class="summary-card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+      <span style="color:#64748b">Stock Status</span>
+      <span style="font-weight:600">${restockLabel}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+      <span style="color:#64748b">Refund Mode</span>
+      <span style="font-weight:600">${refundMethod}</span>
+    </div>
+    <div style="border-top:1.5px solid #f87171;padding-top:10px;display:flex;justify-content:space-between;font-size:17px;font-weight:800;color:#991b1b">
+      <span>TOTAL REFUNDED</span>
+      <span>Rs. ${totalRefund.toFixed(0)}</span>
+    </div>
+  </div>
+  <div class="sig-area">
+    <div class="sig-box">Customer Signature</div>
+    <div class="sig-box">Authorized Cashier Signature</div>
+  </div>
+  <p style="text-align:center;font-size:11px;color:#94a3b8;margin-top:40px">★ EdgeX Digital POS System ★</p>
+  ${printScript}</body></html>`
+}
+

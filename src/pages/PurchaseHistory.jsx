@@ -168,21 +168,25 @@ function PurchaseHistory() {
             // Update purchase record total
             const newPurchaseTotal = Math.max(0, (selectedPurchase.total_amount || 0) - totalReturnAmount)
             await supabase.from('purchases').update({ total_amount: newPurchaseTotal }).eq('id', selectedPurchase.id)
+            await db.purchases.update(selectedPurchase.id, { total_amount: newPurchaseTotal })
 
             // If credit purchase, reduce supplier balance
             if (selectedPurchase.payment_type === 'credit' && selectedPurchase.supplier_id) {
                 const { data: sup } = await supabase.from('suppliers').select('outstanding_balance').eq('id', selectedPurchase.supplier_id).maybeSingle()
                 const newBal = Math.max(0, (sup?.outstanding_balance || 0) - totalReturnAmount)
                 await supabase.from('suppliers').update({ outstanding_balance: newBal }).eq('id', selectedPurchase.supplier_id)
+                await db.suppliers.update(selectedPurchase.supplier_id, { outstanding_balance: newBal })
 
                 // Log payment return in supplier_payments
-                await supabase.from('supplier_payments').insert([{
+                const payRec = {
                     shop_id: user.shop_id,
                     supplier_id: selectedPurchase.supplier_id,
                     amount: -totalReturnAmount,
                     payment_type: 'return',
                     note: `Return from Purchase PR-${String(selectedPurchase.id).slice(-6)}`
-                }])
+                }
+                const { data: insPay } = await supabase.from('supplier_payments').insert([payRec]).select()
+                if (insPay?.[0]) await db.supplier_payments.put(insPay[0])
             }
 
             // Audit Log
@@ -228,12 +232,30 @@ function PurchaseHistory() {
                     await db.sync_queue.add({ table: 'products', action: 'UPDATE', data: { id: item.product_id, stock_quantity: newStock }, timestamp: new Date().toISOString() })
                 }
 
-                // Update local purchase total
+                // 3. Update local purchase total
                 const newPurchaseTotal = Math.max(0, (selectedPurchase.total_amount || 0) - totalReturnAmount)
                 await db.purchases.update(selectedPurchase.id, { total_amount: newPurchaseTotal })
                 await db.sync_queue.add({ table: 'purchases', action: 'UPDATE', data: { id: selectedPurchase.id, total_amount: newPurchaseTotal }, timestamp: new Date().toISOString() })
 
-                alert('Offline mode: Return processed locally. Stock and Invoice updated! 🔄')
+                // 4. Update local supplier balance & queue payment
+                if (selectedPurchase.payment_type === 'credit' && selectedPurchase.supplier_id) {
+                    const localSup = await db.suppliers.get(selectedPurchase.supplier_id)
+                    const newBal = Math.max(0, (localSup?.outstanding_balance || 0) - totalReturnAmount)
+                    await db.suppliers.update(selectedPurchase.supplier_id, { outstanding_balance: newBal })
+                    await db.sync_queue.add({ table: 'suppliers', action: 'UPDATE', data: { id: selectedPurchase.supplier_id, outstanding_balance: newBal }, timestamp: new Date().toISOString() })
+
+                    const payRec = {
+                        shop_id: user.shop_id,
+                        supplier_id: selectedPurchase.supplier_id,
+                        amount: -totalReturnAmount,
+                        payment_type: 'return',
+                        note: `Return from Purchase PR-${String(selectedPurchase.id).slice(-6)}`
+                    }
+                    await db.supplier_payments.add({ ...payRec, id: 'spay-' + Date.now(), created_at: new Date().toISOString() })
+                    await db.sync_queue.add({ table: 'supplier_payments', action: 'INSERT', data: payRec, timestamp: new Date().toISOString() })
+                }
+
+                alert('Offline mode: Return processed locally. Stock and Supplier Ledger updated! 🔄')
                 setReturning(false)
                 setReturnQtys({})
                 setSelectedPurchase({ ...selectedPurchase, total_amount: newPurchaseTotal })
