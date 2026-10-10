@@ -1,5 +1,5 @@
 import { useAuth } from '../context/AuthContext'
-import { useTheme } from '../context/ThemeContext'
+import { useTheme, THEME_STYLES } from '../context/ThemeContext'
 import { useNavigate, Link, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../services/supabase'
@@ -10,16 +10,17 @@ import {
   ShoppingBag, History, Wallet, BarChart3, UserCog,
   Settings as SettingsIcon, Trash2, LifeBuoy, Lock, Store,
   FlaskConical, Factory, Workflow, Star,
-  Sun, Moon, Volume2, VolumeX
+  Sun, Moon, Volume2, VolumeX, Palette, Check
 } from 'lucide-react'
 
 let lastLayoutFetchTime = 0
 
 function Layout({ children }) {
   const { user, logout, stopImpersonating } = useAuth()
-  const { isDark, toggleTheme, soundEnabled, toggleSound } = useTheme()
+  const { isDark, toggleTheme, soundEnabled, toggleSound, themeStyle, setThemeStyle } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
+  const [showThemeModal, setShowThemeModal] = useState(false)
 
   const [lowStock, setLowStock] = useState([])
   const [shopName, setShopName] = useState(() => {
@@ -725,6 +726,19 @@ function Layout({ children }) {
               )}
             </button>
 
+            {/* OS Design Theme Switcher Modal Trigger */}
+            <button
+              onClick={() => setShowThemeModal(true)}
+              data-sound="click"
+              className="px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl border border-[#e5e5ea] dark:border-[#38383a] bg-white dark:bg-[#2c2c2e] text-[#1d1d1f] dark:text-[#f5f5f7] hover:bg-black/[0.04] dark:hover:bg-white/[0.08] text-[10px] sm:text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer select-none shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
+              title="Select OS Design Theme (Apple, Glass, Pixel, OnePlus, Samsung)"
+            >
+              <Palette size={14} className="text-[#0071e3] dark:text-[#2997ff]" />
+              <span className="hidden md:inline font-medium">
+                {THEME_STYLES.find(t => t.id === themeStyle)?.badge || 'Theme'}
+              </span>
+            </button>
+
             {/* Compact Mode Toggle */}
             <button
               onClick={toggleCompactMode}
@@ -999,6 +1013,104 @@ function Layout({ children }) {
           border-radius: 0.5rem !important;
         }
       `}</style>
+
+      {/* OS Design Theme Selector Modal */}
+      {showThemeModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setShowThemeModal(false)}
+        >
+          <div
+            className="bg-white dark:bg-[#1c1c1e] text-[#1d1d1f] dark:text-[#f5f5f7] w-full max-w-2xl rounded-[24px] border border-[#e5e5ea] dark:border-[#2c2c2e] shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-[#e5e5ea] dark:border-[#2c2c2e] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-[#0071e3] dark:text-[#2997ff] flex items-center justify-center text-lg shadow-xs">
+                  🎨
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">System Design Language</h3>
+                  <p className="text-xs text-[#86868b] dark:text-[#98989d]">Choose your preferred operating system visual identity</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowThemeModal(false)}
+                className="w-8 h-8 rounded-full bg-[#f5f5f7] dark:bg-[#2c2c2e] hover:bg-[#e5e5ea] dark:hover:bg-[#3a3a3c] text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-white flex items-center justify-center font-bold text-sm transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Themes Grid */}
+            <div className="p-4 sm:p-5 overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {THEME_STYLES.map(style => {
+                  const isActive = themeStyle === style.id
+                  return (
+                    <div
+                      key={style.id}
+                      onClick={() => setThemeStyle(style.id)}
+                      data-sound="toggle"
+                      className={`p-3.5 rounded-[18px] border-2 transition-all cursor-pointer select-none text-left flex flex-col justify-between relative group ${
+                        isActive
+                          ? 'border-[#0071e3] dark:border-[#2997ff] bg-blue-50/40 dark:bg-blue-950/30 shadow-md ring-2 ring-blue-500/20'
+                          : 'border-[#e5e5ea] dark:border-[#2c2c2e] bg-white dark:bg-[#242426] hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-xs'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-2xl shrink-0">{style.icon}</span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="font-bold text-sm text-[#1d1d1f] dark:text-white truncate">{style.name}</h4>
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.08] text-[#86868b] dark:text-[#98989d]">
+                                {style.badge}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-[#86868b] dark:text-[#98989d] uppercase font-bold tracking-wider">{style.category}</p>
+                          </div>
+                        </div>
+                        {isActive && (
+                          <span className="w-5 h-5 rounded-full bg-[#0071e3] dark:bg-[#2997ff] text-white flex items-center justify-center shrink-0 shadow-xs">
+                            <Check size={12} strokeWidth={3} />
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-[#86868b] dark:text-[#98989d] mb-3 leading-relaxed">
+                        {style.description}
+                      </p>
+                      {/* Preview Chips */}
+                      <div className="flex items-center gap-2 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                        <span className="w-3 h-3 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: style.accentColor }} />
+                        <span className="text-[10px] font-bold text-[#86868b] dark:text-[#98989d]">System Accent</span>
+                        <span className="ml-auto text-[10px] font-bold text-[#0071e3] dark:text-[#2997ff] transition">
+                          {isActive ? 'Active ✓' : 'Tap to Apply →'}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-[#f5f5f7] dark:bg-[#161618] border-t border-[#e5e5ea] dark:border-[#2c2c2e] flex items-center justify-between">
+              <span className="text-xs text-[#86868b] dark:text-[#98989d]">
+                Live preview active. Settings persist automatically.
+              </span>
+              <button
+                onClick={() => setShowThemeModal(false)}
+                data-sound="click"
+                className="px-5 py-2 bg-[#0071e3] hover:bg-[#0077ed] text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer active:scale-95"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

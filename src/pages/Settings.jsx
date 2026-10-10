@@ -9,11 +9,13 @@ import { hasFeature } from '../utils/featureGate'
 import { printHTML } from '../utils/printUtils'
 import { syncOfflineData } from '../services/syncService'
 import { BUSINESS_PRESETS } from '../utils/businessPresets'
-import { Store, Tag, Receipt, ShieldCheck, Volume2, VolumeX, Play } from 'lucide-react'
+import { Store, Tag, Receipt, ShieldCheck, Volume2, VolumeX, Play, Palette, Check } from 'lucide-react'
 import { getSoundConfig, toggleSoundType, testSound, setSoundEnabled } from '../utils/soundEffects'
+import { useTheme, THEME_STYLES } from '../context/ThemeContext'
 
 function Settings() {
   const { user } = useAuth()
+  const { themeStyle, setThemeStyle, isDark, toggleTheme } = useTheme()
   const [shop, setShop] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -854,6 +856,75 @@ function Settings() {
             </button>
           </div>
         </form>
+      </div>
+
+      {/* ── SYSTEM UI & DESIGN THEMES ── */}
+      <div className="bg-white dark:bg-[#1c1c1e] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2c2c2e] overflow-hidden">
+        <div className="bg-gray-50 dark:bg-[#2c2c2e] px-6 py-4 border-b border-gray-100 dark:border-[#38383a] flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-[#0071e3] dark:text-[#2997ff] flex items-center justify-center">
+              <Palette size={20} />
+            </div>
+            <div>
+              <h2 className="font-bold text-gray-800 dark:text-[#f5f5f7]">System UI & Design Themes</h2>
+              <p className="text-xs text-gray-400 dark:text-[#98989d]">Choose an operating system visual identity for your store</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            data-sound="toggle"
+            className="px-3 py-1.5 rounded-xl font-bold text-xs transition flex items-center gap-1.5 cursor-pointer bg-gray-100 dark:bg-[#38383a] text-gray-700 dark:text-[#f5f5f7] hover:bg-gray-200 dark:hover:bg-[#48484a]"
+          >
+            {isDark ? '🌙 Dark Mode Active' : '☀️ Light Mode Active'}
+          </button>
+        </div>
+
+        <div className="p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {THEME_STYLES.map(style => {
+              const isActive = themeStyle === style.id
+              return (
+                <div
+                  key={style.id}
+                  onClick={() => setThemeStyle(style.id)}
+                  data-sound="toggle"
+                  className={`p-4 rounded-[18px] border-2 transition-all cursor-pointer select-none flex flex-col justify-between text-left group ${
+                    isActive
+                      ? 'border-[#0071e3] dark:border-[#2997ff] bg-blue-50/40 dark:bg-blue-950/20 shadow-md ring-2 ring-blue-500/20'
+                      : 'border-gray-100 dark:border-[#2c2c2e] hover:border-gray-300 dark:hover:border-gray-600 bg-white dark:bg-[#242426]'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-2xl">{style.icon}</span>
+                      {isActive ? (
+                        <span className="w-5 h-5 rounded-full bg-[#0071e3] dark:bg-[#2997ff] text-white flex items-center justify-center text-xs shadow-xs">
+                          <Check size={12} strokeWidth={3} />
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                          {style.category}
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="font-bold text-sm text-gray-900 dark:text-[#f5f5f7] mb-0.5">{style.name}</h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-3">{style.description}</p>
+                  </div>
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-[#2c2c2e] text-[11px] font-bold">
+                    <span className="flex items-center gap-1.5 text-gray-400">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: style.accentColor }} />
+                      {style.badge}
+                    </span>
+                    <span className={isActive ? 'text-[#0071e3] dark:text-[#2997ff]' : 'text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-200'}>
+                      {isActive ? 'Active ✓' : 'Select'}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
 
       {/* ── SOUND & AUDIO EFFECTS SETTINGS (APPLE HIG) ── */}
