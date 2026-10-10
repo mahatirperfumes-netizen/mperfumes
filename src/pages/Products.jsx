@@ -24,6 +24,8 @@ function Products() {
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [pendingDeleteIds, setPendingDeleteIds] = useState([])
   const [showBulkEdit, setShowBulkEdit] = useState(false)
+  const [bulkScope, setBulkScope] = useState('selected') // 'selected' | 'all' | 'category'
+  const [bulkSourceCategory, setBulkSourceCategory] = useState('')
   const [bulkCategory, setBulkCategory] = useState('')
   const [bulkBrand, setBulkBrand] = useState('')
   const [bulkUnit, setBulkUnit] = useState('')
@@ -539,12 +541,54 @@ function Products() {
     }
   }
 
+  const getBulkTargetProducts = () => {
+    if (bulkScope === 'selected') {
+      return products.filter(p => selected.includes(p.id))
+    }
+    if (bulkScope === 'category') {
+      if (!bulkSourceCategory) return []
+      return products.filter(p => String(p.category_id) === String(bulkSourceCategory))
+    }
+    if (bulkScope === 'all') {
+      return products
+    }
+    return []
+  }
+
   const handleBulkEdit = async () => {
-    if (!bulkCategory && !bulkBrand && !bulkUnit) {
-      alert('Category, Brand ya Unit mein se kuch toh select karo!')
+    const targetProducts = getBulkTargetProducts()
+    if (targetProducts.length === 0) {
+      alert('Koi target product nahi mila update karne ke liye.')
       return
     }
-    if (!confirm(`${selected.length} product(s) update honge. Continue?`)) return
+    if (!bulkCategory && !bulkBrand && !bulkUnit) {
+      alert('Category, Unit ya Brand mein se kam se kam aik field select karein!')
+      return
+    }
+
+    const targetIds = targetProducts.map(p => p.id)
+    const summaryList = []
+    if (bulkCategory) {
+      const catObj = categories.find(c => String(c.id) === String(bulkCategory))
+      summaryList.push(`Category ➔ ${catObj?.name || bulkCategory}`)
+    }
+    if (bulkUnit) {
+      const unitObj = units.find(u => String(u.id) === String(bulkUnit))
+      summaryList.push(`Unit ➔ ${unitObj?.name || bulkUnit}`)
+    }
+    if (bulkBrand) {
+      summaryList.push(`Brand ➔ ${bulkBrand}`)
+    }
+
+    const scopeDesc = bulkScope === 'selected'
+      ? `${targetIds.length} selected product(s)`
+      : bulkScope === 'category'
+        ? `${targetIds.length} product(s) in category "${categories.find(c => String(c.id) === String(bulkSourceCategory))?.name || ''}"`
+        : `ALL ${targetIds.length} products in shop`
+
+    if (!confirm(`${scopeDesc} par yeh changes apply honge:\n\n• ${summaryList.join('\n• ')}\n\nKya aap continue karna chahte hain?`)) {
+      return
+    }
 
     setBulkSaving(true)
     const updates = {}
@@ -555,7 +599,7 @@ function Products() {
     let successCount = 0
     let failCount = 0
 
-    for (const id of selected) {
+    for (const id of targetIds) {
       try {
         if (navigator.onLine) {
           const { error } = await supabase.from('products').update(updates).eq('id', id).eq('shop_id', user.shop_id)
@@ -575,7 +619,7 @@ function Products() {
       'BULK_EDIT_PRODUCTS',
       'products',
       'multiple',
-      { updated_count: successCount, failed_count: failCount, changes: updates },
+      { scope: bulkScope, source_category: bulkSourceCategory || null, target_count: targetIds.length, updated_count: successCount, failed_count: failCount, changes: updates },
       user.id,
       user.shop_id
     )
@@ -584,6 +628,7 @@ function Products() {
     setBulkCategory('')
     setBulkBrand('')
     setBulkUnit('')
+    setBulkSourceCategory('')
     setSelected([])
     // If category was changed, clear the active category filter so user can see updated products
     if (bulkCategory) setSelectedCategory('')
@@ -636,21 +681,32 @@ function Products() {
           >
             <span>🏷️</span> Barcodes
           </button>
+          {/* Bulk Edit Button (Always available for batch category/unit operations) */}
+          <button
+            onClick={() => {
+              setBulkScope(selected.length > 0 ? 'selected' : (selectedCategory ? 'category' : 'all'))
+              setBulkSourceCategory(selectedCategory || '')
+              setBulkCategory('')
+              setBulkBrand('')
+              setBulkUnit('')
+              setShowBulkEdit(true)
+            }}
+            className={`px-4 py-2 rounded-xl transition font-bold text-sm flex items-center gap-2 shadow-xs cursor-pointer ${
+              selected.length > 0
+                ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-100'
+                : 'border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/50 text-purple-700 dark:text-purple-300'
+            }`}
+            title="Bulk Edit Category, Unit, or Brand for products"
+          >
+            <span>✏️</span> Bulk Edit{selected.length > 0 ? ` (${selected.length})` : ''}
+          </button>
           {selected.length > 0 && (
-            <>
-              <button
-                onClick={() => { setShowBulkEdit(true); setBulkCategory(''); setBulkBrand(''); setBulkUnit('') }}
-                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl transition font-bold text-sm flex items-center gap-2 shadow-sm"
-              >
-                ✏️ Bulk Edit ({selected.length})
-              </button>
-              <button
-                onClick={() => requestDelete(selected)}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition font-bold text-sm flex items-center gap-2 shadow-sm"
-              >
-                🗑️ Delete Selected ({selected.length})
-              </button>
-            </>
+            <button
+              onClick={() => requestDelete(selected)}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition font-bold text-sm flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              🗑️ Delete Selected ({selected.length})
+            </button>
           )}
           <Link
             to="/add-product"
@@ -1062,69 +1118,202 @@ function Products() {
         />
       )}
 
-      {/* Bulk Edit Modal */}
-      {showBulkEdit && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-start sm:items-center justify-center z-50 overflow-y-auto py-4 px-2 sm:px-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-4 sm:p-6 w-full max-w-sm">
-            <h2 className="text-xl font-bold text-gray-800 mb-1">✏️ Bulk Edit</h2>
-            <p className="text-sm text-gray-500 mb-4">{selected.length} product(s) selected. Sirf woh fields update hongi jo aap select karein.</p>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-gray-700 font-medium mb-1">Category</label>
-                <select
-                  value={bulkCategory}
-                  onChange={e => setBulkCategory(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+      {/* Enhanced Bulk Edit Modal (Category, Unit, Brand for Selected / Specific Category / All Products) */}
+      {showBulkEdit && (() => {
+        const targetProducts = getBulkTargetProducts()
+        
+        return (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-y-auto py-6 px-3 sm:px-4 animate-in fade-in duration-200">
+            <div className="bg-white dark:bg-[#1c1c1e] text-[#1d1d1f] dark:text-[#f5f5f7] rounded-[24px] border border-[#e5e5ea] dark:border-[#2c2c2e] shadow-2xl p-5 sm:p-6 w-full max-w-lg my-auto">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-[#e5e5ea] dark:border-[#2c2c2e]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center text-lg shadow-xs">
+                    ⚡
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-black tracking-tight text-gray-900 dark:text-white">Bulk Edit Products</h2>
+                    <p className="text-xs text-[#86868b] dark:text-[#98989d]">Batch change Category, Unit, or Brand across your catalog</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkEdit(false)}
+                  className="w-8 h-8 rounded-full bg-[#f5f5f7] dark:bg-[#2c2c2e] hover:bg-[#e5e5ea] dark:hover:bg-[#3a3a3c] text-[#86868b] hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm transition cursor-pointer"
                 >
-                  <option value="">— Don't change —</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  ✕
+                </button>
               </div>
 
-              <div>
-                <label className="block text-gray-700 font-medium mb-1">Brand</label>
-                <select
-                  value={bulkBrand}
-                  onChange={e => setBulkBrand(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="">— Don't change —</option>
-                  {brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
-                </select>
+              {/* Step 1: Select Target Scope */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+                  1. Select Target Scope
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {/* Scope: Selected */}
+                  <button
+                    type="button"
+                    disabled={selected.length === 0}
+                    onClick={() => setBulkScope('selected')}
+                    className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer select-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                      bulkScope === 'selected'
+                        ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 ring-2 ring-purple-500/20'
+                        : 'border-[#e5e5ea] dark:border-[#2c2c2e] hover:bg-gray-50 dark:hover:bg-[#2c2c2e] text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <span>☑️ Selected Only</span>
+                    <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">({selected.length} checked)</span>
+                  </button>
+
+                  {/* Scope: Specific Category */}
+                  <button
+                    type="button"
+                    onClick={() => setBulkScope('category')}
+                    className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer select-none ${
+                      bulkScope === 'category'
+                        ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 ring-2 ring-purple-500/20'
+                        : 'border-[#e5e5ea] dark:border-[#2c2c2e] hover:bg-gray-50 dark:hover:bg-[#2c2c2e] text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <span>📁 By Category</span>
+                    <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">Specific category</span>
+                  </button>
+
+                  {/* Scope: All Products */}
+                  <button
+                    type="button"
+                    onClick={() => setBulkScope('all')}
+                    className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer select-none ${
+                      bulkScope === 'all'
+                        ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 ring-2 ring-purple-500/20'
+                        : 'border-[#e5e5ea] dark:border-[#2c2c2e] hover:bg-gray-50 dark:hover:bg-[#2c2c2e] text-gray-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <span>🌐 All Products</span>
+                    <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400">({products.length} items)</span>
+                  </button>
+                </div>
+
+                {/* Sub-selector if Scope is Specific Category */}
+                {bulkScope === 'category' && (
+                  <div className="mt-2.5 p-3 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/40">
+                    <label className="block text-xs font-semibold text-purple-900 dark:text-purple-200 mb-1.5">
+                      Select Target Category to change:
+                    </label>
+                    <select
+                      value={bulkSourceCategory}
+                      onChange={e => setBulkSourceCategory(e.target.value)}
+                      className="w-full px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-xs bg-white dark:bg-[#1c1c1e] text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="">— Select Category —</option>
+                      {categories.map(c => {
+                        const count = products.filter(p => String(p.category_id) === String(c.id)).length
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({count} products)
+                          </option>
+                        )
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {/* Live Target Count Pill */}
+                <div className="mt-2 flex items-center justify-between text-xs px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-[#2c2c2e] text-gray-600 dark:text-gray-300">
+                  <span>🎯 Target scope:</span>
+                  <span className="font-bold text-purple-600 dark:text-purple-400">
+                    {targetProducts.length} product(s) will be affected
+                  </span>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-gray-700 font-medium mb-1">Unit</label>
-                <select
-                  value={bulkUnit}
-                  onChange={e => setBulkUnit(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value="">— Don't change —</option>
-                  {units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              </div>
-            </div>
+              {/* Step 2: Choose Fields to Change */}
+              <div className="space-y-3.5 mb-5">
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  2. Choose Changes to Apply (Leave blank to keep unchanged)
+                </label>
 
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={handleBulkEdit}
-                disabled={bulkSaving || (!bulkCategory && !bulkBrand && !bulkUnit)}
-                className="flex-1 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold transition disabled:opacity-50"
-              >
-                {bulkSaving ? 'Updating...' : '✅ Apply Changes'}
-              </button>
-              <button
-                onClick={() => { setShowBulkEdit(false); setBulkUnit('') }}
-                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-bold transition"
-              >
-                Cancel
-              </button>
+                {/* New Unit */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                    Change Unit To:
+                  </label>
+                  <select
+                    value={bulkUnit}
+                    onChange={e => setBulkUnit(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#242426] text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">— Don't change unit (Keep current) —</option>
+                    {units.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* New Category */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                    Change Category To:
+                  </label>
+                  <select
+                    value={bulkCategory}
+                    onChange={e => setBulkCategory(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#242426] text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">— Don't change category (Keep current) —</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* New Brand */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                    Change Brand To:
+                  </label>
+                  <select
+                    value={bulkBrand}
+                    onChange={e => setBulkBrand(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#e5e5ea] dark:border-[#2c2c2e] rounded-xl text-sm bg-white dark:bg-[#242426] text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">— Don't change brand (Keep current) —</option>
+                    {brands.map(b => (
+                      <option key={b.id} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-3 border-t border-[#e5e5ea] dark:border-[#2c2c2e]">
+                <button
+                  type="button"
+                  onClick={handleBulkEdit}
+                  disabled={bulkSaving || targetProducts.length === 0 || (!bulkCategory && !bulkBrand && !bulkUnit)}
+                  className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-sm transition shadow-md shadow-purple-100 dark:shadow-none disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer active:scale-95"
+                >
+                  {bulkSaving ? 'Updating...' : `✅ Apply to ${targetProducts.length} Product(s)`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkEdit(false)}
+                  className="px-5 py-2.5 bg-gray-100 dark:bg-[#2c2c2e] hover:bg-gray-200 dark:hover:bg-[#38383a] text-gray-700 dark:text-gray-300 rounded-xl font-bold text-sm transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Barcode Label Printing Modal */}
       {showBarcodeModal && (
