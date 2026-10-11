@@ -42,6 +42,8 @@ export default function RawMaterials() {
     density: 1.0000,
     cost_price: 0,
     min_stock_level: 0,
+    current_stock: '',
+    lot_number: '',
     notes: '',
     is_active: true
   })
@@ -126,6 +128,10 @@ export default function RawMaterials() {
     setError('')
     if (item) {
       setEditingItem(item)
+      const itemLots = lots.filter(l => String(l.item_id) === String(item.id))
+      const lotStock = itemLots.reduce((acc, l) => acc + Number(l.available_quantity || 0), 0)
+      const currentStockVal = itemLots.length > 0 ? lotStock : Number(item.current_stock || 0)
+
       setFormData({
         name: item.name || '',
         sku: item.sku || '',
@@ -138,6 +144,8 @@ export default function RawMaterials() {
         density: item.density !== undefined ? item.density : 1.0000,
         cost_price: item.cost_price || 0,
         min_stock_level: item.min_stock_level || 0,
+        current_stock: currentStockVal,
+        lot_number: '',
         notes: item.notes || '',
         is_active: item.is_active !== undefined ? item.is_active : true
       })
@@ -155,6 +163,8 @@ export default function RawMaterials() {
         density: 1.0000,
         cost_price: 0,
         min_stock_level: 0,
+        current_stock: '',
+        lot_number: '',
         notes: '',
         is_active: true
       })
@@ -182,6 +192,8 @@ export default function RawMaterials() {
     setSaving(true)
     setError('')
 
+    const initialQty = Number(formData.current_stock) || 0
+
     const payload = {
       shop_id: user.shop_id,
       name: formData.name.trim(),
@@ -195,6 +207,7 @@ export default function RawMaterials() {
       density: Number(formData.density) || 1.0000,
       cost_price: Number(formData.cost_price) || 0,
       min_stock_level: Number(formData.min_stock_level) || 0,
+      current_stock: initialQty,
       notes: formData.notes.trim() || null,
       is_active: formData.is_active,
       is_purchasable: true,
@@ -204,6 +217,12 @@ export default function RawMaterials() {
     try {
       if (editingItem) {
         // Update
+        const prevStock = Number(editingItem.current_stock) || 0
+        const newStock = formData.current_stock !== '' && formData.current_stock !== undefined
+          ? Number(formData.current_stock)
+          : prevStock
+        payload.current_stock = newStock
+
         const { data, error: upError } = await supabase
           .from('items')
           .update(payload)
@@ -212,10 +231,48 @@ export default function RawMaterials() {
           .single()
 
         if (upError) throw upError
+
+        // If stock balance was adjusted
+        const stockDiff = newStock - prevStock
+        if (stockDiff !== 0) {
+          await supabase.from('inventory_ledger').insert([{
+            shop_id: user.shop_id,
+            item_id: editingItem.id,
+            transaction_type: 'adjustment',
+            quantity: stockDiff,
+            base_unit: payload.base_unit,
+            unit_cost: payload.cost_price,
+            total_cost: Number((Math.abs(stockDiff) * payload.cost_price).toFixed(2)),
+            reference_id: 'MANUAL-ADJUST',
+            notes: `Stock adjusted from ${prevStock} to ${newStock} in Master Data`,
+            user_id: user.id
+          }])
+
+          if (stockDiff > 0) {
+            const lotNum = formData.lot_number?.trim() || `LOT-ADJ-${Date.now().toString().slice(-6)}`
+            const { data: adjLot } = await supabase.from('inventory_lots').insert([{
+              shop_id: user.shop_id,
+              item_id: editingItem.id,
+              lot_number: lotNum,
+              received_date: new Date().toISOString().split('T')[0],
+              initial_quantity: stockDiff,
+              available_quantity: stockDiff,
+              unit_cost: payload.cost_price,
+              status: 'available',
+              notes: 'Stock adjustment added in Master Data'
+            }]).select().maybeSingle()
+
+            if (adjLot && db.inventory_lots) {
+              await db.inventory_lots.put(adjLot).catch(() => {})
+            }
+          }
+        }
+
         setItems(prev => prev.map(it => it.id === editingItem.id ? data : it))
         await db.items.put(data).catch(() => {})
+        await fetchData()
       } else {
-        // Insert
+        // Insert new material
         const { data, error: inError } = await supabase
           .from('items')
           .insert([payload])
@@ -223,8 +280,44 @@ export default function RawMaterials() {
           .single()
 
         if (inError) throw inError
+
+        // If initial opening stock quantity > 0, generate initial inventory lot and ledger entry
+        if (initialQty > 0) {
+          const lotNum = formData.lot_number?.trim() || `LOT-INIT-${Date.now().toString().slice(-6)}`
+          const { data: newLot } = await supabase.from('inventory_lots').insert([{
+            shop_id: user.shop_id,
+            item_id: data.id,
+            lot_number: lotNum,
+            received_date: new Date().toISOString().split('T')[0],
+            initial_quantity: initialQty,
+            available_quantity: initialQty,
+            unit_cost: payload.cost_price,
+            status: 'available',
+            notes: 'Opening stock balance on creation'
+          }]).select().maybeSingle()
+
+          await supabase.from('inventory_ledger').insert([{
+            shop_id: user.shop_id,
+            item_id: data.id,
+            lot_id: newLot?.id || null,
+            transaction_type: 'purchase_receipt',
+            quantity: initialQty,
+            base_unit: payload.base_unit,
+            unit_cost: payload.cost_price,
+            total_cost: Number((initialQty * payload.cost_price).toFixed(2)),
+            reference_id: 'OPENING-STOCK',
+            notes: 'Initial opening stock registered in Master Data',
+            user_id: user.id
+          }])
+
+          if (newLot && db.inventory_lots) {
+            await db.inventory_lots.put(newLot).catch(() => {})
+          }
+        }
+
         setItems(prev => [data, ...prev])
         await db.items.put(data).catch(() => {})
+        await fetchData()
       }
 
       setShowModal(false)
@@ -605,6 +698,62 @@ export default function RawMaterials() {
                     onChange={e => setFormData({ ...formData, min_stock_level: parseFloat(e.target.value) || 0 })}
                     className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-sm font-mono font-bold focus:ring-2 focus:ring-purple-500 outline-none"
                   />
+                </div>
+              </div>
+
+              {/* Initial / Opening Stock & Batch Lot */}
+              <div className="p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-200/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900 uppercase">
+                    <Package size={14} className="text-emerald-600" />
+                    <span>{editingItem ? 'Current Stock Balance' : 'Initial Stock Quantity'}</span>
+                  </div>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full uppercase">
+                    Inventory & Lots
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      {editingItem ? 'Adjust Stock Balance' : 'Initial Stock Quantity'}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        placeholder="0.00"
+                        value={formData.current_stock}
+                        onChange={e => setFormData({ ...formData, current_stock: e.target.value })}
+                        className="w-full pl-3.5 pr-14 py-2 bg-white border border-emerald-300 rounded-xl text-sm font-mono font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                      <span className="absolute right-2.5 top-2 px-2 py-0.5 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg uppercase">
+                        {formData.base_unit || 'unit'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-gray-500 mt-1 block">
+                      {editingItem 
+                        ? 'Updates on-hand stock and writes an adjustment entry to the inventory ledger.' 
+                        : 'Sets opening balance and automatically generates an initial inventory lot.'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      {editingItem ? 'Adjustment Lot # (Optional)' : 'Initial Lot / Batch # (Optional)'}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. LOT-2026-001"
+                      value={formData.lot_number}
+                      onChange={e => setFormData({ ...formData, lot_number: e.target.value })}
+                      className="w-full px-3.5 py-2 bg-white border border-emerald-300 rounded-xl text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                    <span className="text-[10px] text-gray-500 mt-1 block">
+                      Leave empty to auto-assign a tracking batch tag.
+                    </span>
+                  </div>
                 </div>
               </div>
 

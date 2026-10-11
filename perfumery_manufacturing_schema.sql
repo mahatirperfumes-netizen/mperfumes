@@ -242,12 +242,13 @@ CREATE TABLE IF NOT EXISTS public.bottling_component_issues (
 CREATE INDEX IF NOT EXISTS idx_bottling_comp_issues ON public.bottling_component_issues(bottling_run_id);
 
 -- 13. STORED PROCEDURE: Decrement item stock safely
-CREATE OR REPLACE FUNCTION public.decrement_item_stock(p_item_id INTEGER, p_qty NUMERIC)
+DROP FUNCTION IF EXISTS public.decrement_item_stock(INTEGER, NUMERIC);
+CREATE OR REPLACE FUNCTION public.decrement_item_stock(item_id INTEGER, qty NUMERIC)
 RETURNS VOID AS $$
 BEGIN
     UPDATE public.items
-    SET current_stock = GREATEST(0, COALESCE(current_stock, 0) - p_qty)
-    WHERE id = p_item_id;
+    SET current_stock = GREATEST(0, COALESCE(current_stock, 0) - qty)
+    WHERE id = item_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

@@ -380,9 +380,14 @@ export default function BottlingRuns() {
               }
             }
             await supabase.rpc('decrement_item_stock', {
-              p_item_id: c.component_item_id,
-              p_qty: totalQty
-            }).catch(() => {})
+              item_id: c.component_item_id,
+              qty: totalQty
+            }).catch(() => {
+              return supabase.rpc('decrement_item_stock', {
+                p_item_id: c.component_item_id,
+                p_qty: totalQty
+              }).catch(() => {})
+            })
 
             // Immutable ledger records (used vs damaged)
             if (usedQty > 0) {

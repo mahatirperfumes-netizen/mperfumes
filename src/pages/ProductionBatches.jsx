@@ -415,9 +415,14 @@ export default function ProductionBatches() {
               }
             }
             await supabase.rpc('decrement_item_stock', {
-              p_item_id: issue.ingredient_item_id,
-              p_qty: qtyUsed
-            }).catch(() => {})
+              item_id: issue.ingredient_item_id,
+              qty: qtyUsed
+            }).catch(() => {
+              return supabase.rpc('decrement_item_stock', {
+                p_item_id: issue.ingredient_item_id,
+                p_qty: qtyUsed
+              }).catch(() => {})
+            })
 
             // Record in immutable ledger
             await supabase
@@ -493,9 +498,14 @@ export default function ProductionBatches() {
                 }
               }
               await supabase.rpc('decrement_item_stock', {
-                p_item_id: c.component_item_id,
-                p_qty: totalQty
-              }).catch(() => {})
+                item_id: c.component_item_id,
+                qty: totalQty
+              }).catch(() => {
+                return supabase.rpc('decrement_item_stock', {
+                  p_item_id: c.component_item_id,
+                  p_qty: totalQty
+                }).catch(() => {})
+              })
 
               totalPkgCost += Number((totalQty * (c.unit_cost || 0)).toFixed(2))
 
