@@ -331,15 +331,21 @@ export default function BottlingRuns() {
 
         await supabase.from('bottling_component_issues').insert(compIssues)
 
-        // Deduct component lots & log to ledger
+        // Deduct component lots, items stock & log to ledger
         for (const c of selectedComponents) {
-          const totalQty = Number(c.quantity_used) + Number(c.quantity_damaged || 0)
-          if (c.lot_id && totalQty > 0) {
-            const { data: lot } = await supabase
-              .from('inventory_lots')
-              .select('*')
-              .eq('id', c.lot_id)
-              .single()
+          const usedQty = Number(c.quantity_used) || 0
+          const damagedQty = Number(c.quantity_damaged) || 0
+          const totalQty = usedQty + damagedQty
+          if (totalQty > 0) {
+            let lot = null
+            if (c.lot_id) {
+              const { data: fetchedLot } = await supabase
+                .from('inventory_lots')
+                .select('*')
+                .eq('id', c.lot_id)
+                .single()
+              lot = fetchedLot
+            }
 
             if (lot) {
               const newAvail = Math.max(0, Number(lot.available_quantity) - totalQty)
@@ -350,24 +356,134 @@ export default function BottlingRuns() {
                 .update({ available_quantity: newAvail, status: lotStat })
                 .eq('id', lot.id)
 
-              // Immutable ledger record
+              if (db.inventory_lots) {
+                await db.inventory_lots.update(lot.id, { available_quantity: newAvail, status: lotStat }).catch(() => {})
+              }
+            }
+
+            // Deduct items current_stock catalog-wide
+            const { data: itm } = await supabase
+              .from('items')
+              .select('id, current_stock')
+              .eq('id', c.component_item_id)
+              .maybeSingle()
+
+            if (itm) {
+              const newStock = Math.max(0, (Number(itm.current_stock) || 0) - totalQty)
+              await supabase
+                .from('items')
+                .update({ current_stock: newStock })
+                .eq('id', c.component_item_id)
+
+              if (db.items) {
+                await db.items.update(c.component_item_id, { current_stock: newStock }).catch(() => {})
+              }
+            }
+            await supabase.rpc('decrement_item_stock', {
+              p_item_id: c.component_item_id,
+              p_qty: totalQty
+            }).catch(() => {})
+
+            // Immutable ledger records (used vs damaged)
+            if (usedQty > 0) {
               await supabase
                 .from('inventory_ledger')
                 .insert([{
                   shop_id: user.shop_id,
                   item_id: c.component_item_id,
-                  lot_id: lot.id,
+                  lot_id: lot ? lot.id : null,
                   transaction_type: 'bottling_issue',
-                  quantity: -Math.abs(totalQty),
+                  quantity: -Math.abs(usedQty),
                   base_unit: 'pcs',
                   unit_cost: c.unit_cost,
-                  total_cost: Number((totalQty * c.unit_cost).toFixed(2)),
+                  total_cost: Number((usedQty * c.unit_cost).toFixed(2)),
                   reference_id: `RUN-${createdRun.run_number}`,
-                  notes: `Consumed in bottling run ${createdRun.run_number}`,
+                  notes: `Packaging consumed in bottling run ${createdRun.run_number}`,
+                  user_id: user.id
+                }])
+            }
+
+            if (damagedQty > 0) {
+              await supabase
+                .from('inventory_ledger')
+                .insert([{
+                  shop_id: user.shop_id,
+                  item_id: c.component_item_id,
+                  lot_id: lot ? lot.id : null,
+                  transaction_type: 'bottling_damage',
+                  quantity: -Math.abs(damagedQty),
+                  base_unit: 'pcs',
+                  unit_cost: c.unit_cost,
+                  total_cost: Number((damagedQty * c.unit_cost).toFixed(2)),
+                  reference_id: `RUN-${createdRun.run_number}`,
+                  notes: `Damaged/scrapped packaging during run ${createdRun.run_number}`,
                   user_id: user.id
                 }])
             }
           }
+        }
+      }
+
+      // 3b. Deduct Bulk Liquid from Source Batch Lot & Items stock
+      if (selectedBatchObj && bulkVolumeConsumed > 0) {
+        const { data: bulkLot } = await supabase
+          .from('inventory_lots')
+          .select('*')
+          .eq('shop_id', user.shop_id)
+          .ilike('lot_number', `%${selectedBatchObj.batch_number}%`)
+          .gt('available_quantity', 0)
+          .order('id', { ascending: false })
+          .maybeSingle()
+
+        if (bulkLot) {
+          const newBulkAvail = Math.max(0, Number(bulkLot.available_quantity) - bulkVolumeConsumed)
+          const bulkStat = newBulkAvail <= 0 ? 'exhausted' : 'available'
+
+          await supabase
+            .from('inventory_lots')
+            .update({ available_quantity: newBulkAvail, status: bulkStat })
+            .eq('id', bulkLot.id)
+
+          if (db.inventory_lots) {
+            await db.inventory_lots.update(bulkLot.id, { available_quantity: newBulkAvail, status: bulkStat }).catch(() => {})
+          }
+
+          if (bulkLot.item_id) {
+            const { data: bItm } = await supabase
+              .from('items')
+              .select('id, current_stock')
+              .eq('id', bulkLot.item_id)
+              .maybeSingle()
+
+            if (bItm) {
+              const newBStock = Math.max(0, (Number(bItm.current_stock) || 0) - bulkVolumeConsumed)
+              await supabase
+                .from('items')
+                .update({ current_stock: newBStock })
+                .eq('id', bulkLot.item_id)
+
+              if (db.items) {
+                await db.items.update(bulkLot.item_id, { current_stock: newBStock }).catch(() => {})
+              }
+            }
+          }
+
+          // Immutable ledger for bulk liquid consumption
+          await supabase
+            .from('inventory_ledger')
+            .insert([{
+              shop_id: user.shop_id,
+              item_id: bulkLot.item_id,
+              lot_id: bulkLot.id,
+              transaction_type: 'bottling_bulk_issue',
+              quantity: -Math.abs(bulkVolumeConsumed),
+              base_unit: 'ml',
+              unit_cost: bulkPerMlCost,
+              total_cost: bulkCostTotal,
+              reference_id: `RUN-${createdRun.run_number}`,
+              notes: `Bulk liquid consumed in bottling run ${createdRun.run_number}`,
+              user_id: user.id
+            }])
         }
       }
 

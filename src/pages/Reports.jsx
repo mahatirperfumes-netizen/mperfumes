@@ -7,12 +7,13 @@ import { hasFeature, isManufacturer } from '../utils/featureGate'
 import UpgradeWall from '../components/UpgradeWall'
 import { printHTML, getShopBranding, brandedA4Header } from '../utils/printUtils'
 import PerfumeryTraceabilityReport from '../components/PerfumeryTraceabilityReport'
+import MaterialConsumptionReport from '../components/MaterialConsumptionReport'
 
 function Reports() {
   const { user } = useAuth()
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState('month') // today, week, month, all
-  const [activeReportTab, setActiveReportTab] = useState('sales') // 'sales' | 'traceability'
+  const [activeReportTab, setActiveReportTab] = useState('sales') // 'sales' | 'traceability' | 'materials'
 
   const [stats, setStats] = useState({
     grossSales: 0,
@@ -292,6 +293,16 @@ function Reports() {
             <span>📊</span> Retail Sales & P&L Analytics
           </button>
           <button
+            onClick={() => setActiveReportTab('materials')}
+            className={`pb-3 text-sm font-bold border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+              activeReportTab === 'materials'
+                ? 'border-emerald-600 text-emerald-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span>🧪</span> Material & Packaging Consumption
+          </button>
+          <button
             onClick={() => setActiveReportTab('traceability')}
             className={`pb-3 text-sm font-bold border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
               activeReportTab === 'traceability'
@@ -299,12 +310,14 @@ function Reports() {
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
-            <span>⚗️</span> Perfumery Lot Traceability & Valuation
+            <span>⚗️</span> Lot Traceability & Valuation
           </button>
         </div>
       )}
 
-      {activeReportTab === 'traceability' && isManufacturer() ? (
+      {activeReportTab === 'materials' && isManufacturer() ? (
+        <MaterialConsumptionReport />
+      ) : activeReportTab === 'traceability' && isManufacturer() ? (
         <PerfumeryTraceabilityReport />
       ) : (
         <>

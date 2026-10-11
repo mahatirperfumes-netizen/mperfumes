@@ -7,7 +7,8 @@ import { calculateTargetIngredient } from '../utils/unitConversion'
 import {
   Workflow, Plus, Search, Filter, Play, CheckCircle2, 
   Clock, AlertTriangle, Printer, X, Eye, FileText, Check,
-  Layers, FlaskConical, Sparkles, ChevronRight, Scale
+  Layers, FlaskConical, Sparkles, ChevronRight, Scale,
+  Package, Droplets, CheckSquare, Square
 } from 'lucide-react'
 
 export default function ProductionBatches() {
@@ -15,6 +16,7 @@ export default function ProductionBatches() {
   const [batches, setBatches] = useState([])
   const [formulas, setFormulas] = useState([])
   const [rawItems, setRawItems] = useState([])
+  const [products, setProducts] = useState([])
   const [availableLots, setAvailableLots] = useState([])
   const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
@@ -28,6 +30,15 @@ export default function ProductionBatches() {
   const [selectedBatch, setSelectedBatch] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // Completion workflow state: 'bulk' or 'direct_bottle'
+  const [completionMode, setCompletionMode] = useState('bulk')
+  const [directBottleForm, setDirectBottleForm] = useState({
+    target_product_id: '',
+    fill_size_ml: 50,
+    good_bottles: 20,
+    components: []
+  })
 
   // Create Batch Form
   const [form, setForm] = useState({
@@ -81,16 +92,16 @@ export default function ProductionBatches() {
         setBatches(local || [])
       }
 
-      // 2. Formulas
+      // 2. Formulas with Ingredients and Packaging BOMs
       const { data: fData } = await supabase
         .from('formulas')
-        .select(`*, formula_ingredients(*)`)
+        .select(`*, formula_ingredients(*), formula_packaging_boms(*)`)
         .eq('shop_id', user.shop_id)
         .order('name')
 
       if (fData) setFormulas(fData)
 
-      // 3. Raw Items
+      // 3. Raw Items (oils, chemicals, packaging components)
       const { data: itemsData } = await supabase
         .from('items')
         .select('*')
@@ -99,7 +110,22 @@ export default function ProductionBatches() {
 
       if (itemsData) setRawItems(itemsData)
 
-      // 4. Inventory Lots (Available stock)
+      // 4. Finished POS Shelf Products
+      const { data: prodData } = await supabase
+        .from('products')
+        .select('*')
+        .eq('shop_id', user.shop_id)
+        .eq('is_active', true)
+        .order('name')
+
+      if (prodData) {
+        setProducts(prodData)
+      } else {
+        const localProds = await db.products?.where('shop_id').equals(user.shop_id).toArray()
+        setProducts(localProds || [])
+      }
+
+      // 5. Inventory Lots (Available stock)
       const { data: lotsData } = await supabase
         .from('inventory_lots')
         .select('*')
@@ -109,7 +135,7 @@ export default function ProductionBatches() {
 
       if (lotsData) setAvailableLots(lotsData)
 
-      // 5. Locations
+      // 6. Locations
       const { data: locData } = await supabase
         .from('inventory_locations')
         .select('*')
@@ -188,6 +214,42 @@ export default function ProductionBatches() {
       ingredients: []
     })
     setShowCreateModal(true)
+  }
+
+  const handleOpenDetailModal = (batch) => {
+    setSelectedBatch(batch)
+    setCompletionMode('bulk')
+    const plannedVol = Number(batch.actual_volume_ml) || Number(batch.planned_volume_ml) || 1000
+    const fillSize = 50
+    const bottles = Math.max(1, Math.floor(plannedVol / fillSize))
+
+    // Packaging components
+    const pkgItems = rawItems.filter(i => i.item_type === 'packaging')
+    const suggestedComponents = pkgItems.map(p => {
+      const itemLots = availableLots.filter(l => String(l.item_id) === String(p.id))
+      const totalStock = itemLots.reduce((acc, l) => acc + Number(l.available_quantity || 0), 0)
+      const defaultLot = itemLots[0] || null
+      const unitCost = defaultLot ? Number(defaultLot.unit_cost) : (Number(p.cost_price) || 0)
+      return {
+        component_item_id: p.id,
+        item_name: p.name,
+        quantity_used: bottles,
+        quantity_damaged: 0,
+        lot_id: defaultLot ? defaultLot.id : '',
+        unit_cost: unitCost,
+        total_cost: Number((bottles * unitCost).toFixed(2)),
+        available_stock: totalStock,
+        selected: true
+      }
+    })
+
+    setDirectBottleForm({
+      target_product_id: products[0]?.id || '',
+      fill_size_ml: fillSize,
+      good_bottles: bottles,
+      components: suggestedComponents
+    })
+    setShowDetailModal(true)
   }
 
   const handleCreateBatch = async (startDirectly = false) => {
@@ -292,7 +354,7 @@ export default function ProductionBatches() {
       }
 
       // ── COMPLETION LOGIC ──
-      // If moving to 'completed', deduct exact inventory lots and credit bulk output
+      // If moving to 'completed', deduct exact inventory lots and credit bulk output or finished goods
       if (newStatus === 'completed') {
         const completedAt = new Date().toISOString()
         updatePayload.completed_at = completedAt
@@ -305,19 +367,23 @@ export default function ProductionBatches() {
         const totalMatCost = Number(batch.total_material_cost) || 0
         updatePayload.cost_per_ml = actualYieldMl > 0 ? Number((totalMatCost / actualYieldMl).toFixed(4)) : 0
 
-        // 1. Deduct ingredient lots & add ledger entries
+        // 1. Deduct ingredient lots & items stock catalog-wide
         const issues = batch.batch_ingredient_issues || []
         for (const issue of issues) {
-          if (issue.lot_id && issue.actual_quantity > 0) {
-            // Fetch lot
-            const { data: lot } = await supabase
-              .from('inventory_lots')
-              .select('*')
-              .eq('id', issue.lot_id)
-              .single()
+          const qtyUsed = Number(issue.actual_quantity) || 0
+          if (qtyUsed > 0) {
+            let lot = null
+            if (issue.lot_id) {
+              const { data: fetchedLot } = await supabase
+                .from('inventory_lots')
+                .select('*')
+                .eq('id', issue.lot_id)
+                .maybeSingle()
+              lot = fetchedLot
+            }
 
             if (lot) {
-              const newAvailable = Math.max(0, Number(lot.available_quantity) - Number(issue.actual_quantity))
+              const newAvailable = Math.max(0, Number(lot.available_quantity) - qtyUsed)
               const lotStatus = newAvailable <= 0 ? 'exhausted' : 'available'
 
               await supabase
@@ -325,107 +391,336 @@ export default function ProductionBatches() {
                 .update({ available_quantity: newAvailable, status: lotStatus })
                 .eq('id', lot.id)
 
-              // Record in immutable ledger
-              await supabase
-                .from('inventory_ledger')
-                .insert([{
-                  shop_id: user.shop_id,
-                  item_id: issue.ingredient_item_id,
-                  lot_id: lot.id,
-                  location_id: lot.location_id || null,
-                  transaction_type: 'production_issue',
-                  quantity: -Math.abs(Number(issue.actual_quantity)),
-                  base_unit: issue.unit,
-                  unit_cost: issue.unit_cost,
-                  total_cost: issue.total_cost,
-                  reference_id: `BATCH-${batch.batch_number}`,
-                  notes: `Consumed in batch ${batch.batch_number}`,
-                  user_id: user.id
-                }])
-
-              // Deduct from items current_stock if column exists
-              await supabase.rpc('decrement_item_stock', {
-                p_item_id: issue.ingredient_item_id,
-                p_qty: Number(issue.actual_quantity)
-              }).catch(() => {})
+              if (db.inventory_lots) {
+                await db.inventory_lots.update(lot.id, { available_quantity: newAvailable, status: lotStatus }).catch(() => {})
+              }
             }
-          }
-        }
 
-        // 2. Find or create Bulk Liquid item and Lot for WIP aging / bottling
-        const wipLocation = locations.find(l => l.name?.toLowerCase().includes('wip') || l.name?.toLowerCase().includes('blending'))
-        const formulaName = batch.formulas?.name || 'Bulk Perfume'
-        
-        // Check if a bulk liquid item exists for this formula
-        let bulkItemId = null
-        const { data: existingBulk } = await supabase
-          .from('items')
-          .select('id')
-          .eq('shop_id', user.shop_id)
-          .eq('item_type', 'bulk_liquid')
-          .ilike('name', `%${formulaName}%`)
-          .maybeSingle()
+            // Deduct items current_stock catalog-wide
+            const { data: itm } = await supabase
+              .from('items')
+              .select('id, current_stock')
+              .eq('id', issue.ingredient_item_id)
+              .maybeSingle()
 
-        if (existingBulk) {
-          bulkItemId = existingBulk.id
-        } else {
-          // Create bulk item
-          const { data: newBulk } = await supabase
-            .from('items')
-            .insert([{
-              shop_id: user.shop_id,
-              sku: `BLK-${batch.batch_number}`,
-              name: `Bulk ${formulaName} Liquid (WIP)`,
-              item_type: 'bulk_liquid',
-              base_unit: 'ml',
-              cost_price: updatePayload.cost_per_ml,
-              is_active: true
-            }])
-            .select('id')
-            .single()
+            if (itm) {
+              const newCurStock = Math.max(0, (Number(itm.current_stock) || 0) - qtyUsed)
+              await supabase
+                .from('items')
+                .update({ current_stock: newCurStock })
+                .eq('id', issue.ingredient_item_id)
 
-          if (newBulk) bulkItemId = newBulk.id
-        }
+              if (db.items) {
+                await db.items.update(issue.ingredient_item_id, { current_stock: newCurStock }).catch(() => {})
+              }
+            }
+            await supabase.rpc('decrement_item_stock', {
+              p_item_id: issue.ingredient_item_id,
+              p_qty: qtyUsed
+            }).catch(() => {})
 
-        if (bulkItemId) {
-          // Create bulk liquid lot
-          const { data: newLot } = await supabase
-            .from('inventory_lots')
-            .insert([{
-              shop_id: user.shop_id,
-              item_id: bulkItemId,
-              lot_number: `LOT-${batch.batch_number}`,
-              received_date: new Date().toISOString().split('T')[0],
-              initial_quantity: actualYieldMl,
-              available_quantity: actualYieldMl,
-              unit_cost: updatePayload.cost_per_ml,
-              location_id: wipLocation?.id || null,
-              status: 'available'
-            }])
-            .select('id')
-            .single()
-
-          // Log bulk output in inventory ledger
-          if (newLot) {
+            // Record in immutable ledger
             await supabase
               .from('inventory_ledger')
               .insert([{
                 shop_id: user.shop_id,
-                item_id: bulkItemId,
-                lot_id: newLot.id,
-                location_id: wipLocation?.id || null,
-                transaction_type: 'bulk_output',
-                quantity: actualYieldMl,
-                base_unit: 'ml',
-                unit_cost: updatePayload.cost_per_ml,
-                total_cost: totalMatCost,
+                item_id: issue.ingredient_item_id,
+                lot_id: lot ? lot.id : null,
+                location_id: lot?.location_id || null,
+                transaction_type: 'production_issue',
+                quantity: -Math.abs(qtyUsed),
+                base_unit: issue.unit,
+                unit_cost: issue.unit_cost,
+                total_cost: issue.total_cost,
                 reference_id: `BATCH-${batch.batch_number}`,
-                notes: `Yield from production batch ${batch.batch_number}`,
+                notes: `Raw ingredient consumed in batch ${batch.batch_number}`,
                 user_id: user.id
               }])
           }
         }
+
+        // 2. CHECK PRODUCTION DESTINATION: DIRECT BOTTLING vs BULK MATURATION
+        if (extraData.directBottling) {
+          // ── DIRECT BOTTLED PRODUCTION ──
+          const pkgComponents = (extraData.packaging_components || []).filter(c => c.selected !== false)
+          let totalPkgCost = 0
+
+          for (const c of pkgComponents) {
+            const usedQty = Number(c.quantity_used) || 0
+            const damagedQty = Number(c.quantity_damaged) || 0
+            const totalQty = usedQty + damagedQty
+
+            if (totalQty > 0) {
+              let lot = null
+              if (c.lot_id) {
+                const { data: pLot } = await supabase
+                  .from('inventory_lots')
+                  .select('*')
+                  .eq('id', c.lot_id)
+                  .maybeSingle()
+                lot = pLot
+              }
+
+              if (lot) {
+                const newAvail = Math.max(0, Number(lot.available_quantity) - totalQty)
+                const lotStat = newAvail <= 0 ? 'exhausted' : 'available'
+                await supabase
+                  .from('inventory_lots')
+                  .update({ available_quantity: newAvail, status: lotStat })
+                  .eq('id', lot.id)
+
+                if (db.inventory_lots) {
+                  await db.inventory_lots.update(lot.id, { available_quantity: newAvail, status: lotStat }).catch(() => {})
+                }
+              }
+
+              // Deduct packaging item stock
+              const { data: pItm } = await supabase
+                .from('items')
+                .select('id, current_stock')
+                .eq('id', c.component_item_id)
+                .maybeSingle()
+
+              if (pItm) {
+                const newPStock = Math.max(0, (Number(pItm.current_stock) || 0) - totalQty)
+                await supabase
+                  .from('items')
+                  .update({ current_stock: newPStock })
+                  .eq('id', c.component_item_id)
+
+                if (db.items) {
+                  await db.items.update(c.component_item_id, { current_stock: newPStock }).catch(() => {})
+                }
+              }
+              await supabase.rpc('decrement_item_stock', {
+                p_item_id: c.component_item_id,
+                p_qty: totalQty
+              }).catch(() => {})
+
+              totalPkgCost += Number((totalQty * (c.unit_cost || 0)).toFixed(2))
+
+              // Immutable ledger for packaging issues
+              if (usedQty > 0) {
+                await supabase
+                  .from('inventory_ledger')
+                  .insert([{
+                    shop_id: user.shop_id,
+                    item_id: c.component_item_id,
+                    lot_id: lot ? lot.id : null,
+                    transaction_type: 'bottling_issue',
+                    quantity: -Math.abs(usedQty),
+                    base_unit: 'pcs',
+                    unit_cost: c.unit_cost,
+                    total_cost: Number((usedQty * c.unit_cost).toFixed(2)),
+                    reference_id: `BATCH-${batch.batch_number}`,
+                    notes: `Packaging used in direct batch bottling ${batch.batch_number}`,
+                    user_id: user.id
+                  }])
+              }
+
+              if (damagedQty > 0) {
+                await supabase
+                  .from('inventory_ledger')
+                  .insert([{
+                    shop_id: user.shop_id,
+                    item_id: c.component_item_id,
+                    lot_id: lot ? lot.id : null,
+                    transaction_type: 'bottling_damage',
+                    quantity: -Math.abs(damagedQty),
+                    base_unit: 'pcs',
+                    unit_cost: c.unit_cost,
+                    total_cost: Number((damagedQty * c.unit_cost).toFixed(2)),
+                    reference_id: `BATCH-${batch.batch_number}`,
+                    notes: `Damaged packaging in direct bottling ${batch.batch_number}`,
+                    user_id: user.id
+                  }])
+              }
+            }
+          }
+
+          // Credit Finished Goods to shelf products & lots
+          const goodBottles = Number(extraData.good_bottles) || 0
+          const totalBatchCost = totalMatCost + totalPkgCost
+          const unitBottleCost = goodBottles > 0 ? Number((totalBatchCost / goodBottles).toFixed(2)) : 0
+
+          let targetProduct = null
+          if (extraData.target_product_id) {
+            targetProduct = products.find(p => String(p.id) === String(extraData.target_product_id))
+          }
+
+          if (targetProduct && goodBottles > 0) {
+            const currentQty = Number(targetProduct.stock_quantity) || 0
+            const newQty = currentQty + goodBottles
+
+            await supabase
+              .from('products')
+              .update({
+                stock_quantity: newQty,
+                cost_price: unitBottleCost
+              })
+              .eq('id', targetProduct.id)
+
+            if (db.products) {
+              await db.products.update(targetProduct.id, {
+                stock_quantity: newQty,
+                cost_price: unitBottleCost
+              }).catch(() => {})
+            }
+          }
+
+          // Create Finished Goods lot in inventory_lots
+          const finishedLotNumber = `LOT-FG-${batch.batch_number}`
+          const finishedLocation = locations.find(l => l.name?.toLowerCase().includes('finished') || l.name?.toLowerCase().includes('shelf'))
+
+          let finishedItemId = null
+          if (targetProduct) {
+            const { data: existItm } = await supabase
+              .from('items')
+              .select('id')
+              .eq('shop_id', user.shop_id)
+              .eq('name', targetProduct.name)
+              .maybeSingle()
+            finishedItemId = existItm?.id || null
+          }
+
+          const { data: fgLot } = await supabase
+            .from('inventory_lots')
+            .insert([{
+              shop_id: user.shop_id,
+              item_id: finishedItemId,
+              lot_number: finishedLotNumber,
+              received_date: new Date().toISOString().split('T')[0],
+              initial_quantity: goodBottles,
+              available_quantity: goodBottles,
+              unit_cost: unitBottleCost,
+              location_id: finishedLocation?.id || null,
+              status: 'available'
+            }])
+            .select('id')
+            .maybeSingle()
+
+          // Finished Goods output in inventory_ledger
+          await supabase
+            .from('inventory_ledger')
+            .insert([{
+              shop_id: user.shop_id,
+              item_id: finishedItemId,
+              lot_id: fgLot?.id || null,
+              transaction_type: 'bottling_output',
+              quantity: goodBottles,
+              base_unit: 'pcs',
+              unit_cost: unitBottleCost,
+              total_cost: totalBatchCost,
+              reference_id: `BATCH-${batch.batch_number}`,
+              notes: `Direct production to finished bottles credited to POS shelf`,
+              user_id: user.id
+            }])
+
+          // Record in bottling_runs for traceability continuity
+          const runNo = `RUN-${batch.batch_number}`
+          await supabase
+            .from('bottling_runs')
+            .insert([{
+              shop_id: user.shop_id,
+              run_number: runNo,
+              source_batch_id: batch.id,
+              target_finished_item_id: finishedItemId,
+              fill_size_ml: Number(extraData.fill_size_ml) || 50,
+              planned_bottles: goodBottles,
+              actual_good_bottles: goodBottles,
+              rejected_bottles: 0,
+              bulk_consumed_ml: actualYieldMl,
+              bulk_cost: totalMatCost,
+              packaging_cost: totalPkgCost,
+              unit_cost: unitBottleCost,
+              qc_status: extraData.qc_status || 'passed',
+              operator_id: batch.operator_id || user.name || 'Staff',
+              completed_at: completedAt
+            }])
+
+        } else {
+          // ── STANDARD BULK WIP LIQUID PRODUCTION ──
+          const wipLocation = locations.find(l => l.name?.toLowerCase().includes('wip') || l.name?.toLowerCase().includes('blending'))
+          const formulaName = batch.formulas?.name || 'Bulk Perfume'
+          
+          let bulkItemId = null
+          const { data: existingBulk } = await supabase
+            .from('items')
+            .select('id, current_stock')
+            .eq('shop_id', user.shop_id)
+            .eq('item_type', 'bulk_liquid')
+            .ilike('name', `%${formulaName}%`)
+            .maybeSingle()
+
+          if (existingBulk) {
+            bulkItemId = existingBulk.id
+            const newBStock = (Number(existingBulk.current_stock) || 0) + actualYieldMl
+            await supabase.from('items').update({ current_stock: newBStock }).eq('id', bulkItemId)
+            if (db.items) await db.items.update(bulkItemId, { current_stock: newBStock }).catch(() => {})
+          } else {
+            const { data: newBulk } = await supabase
+              .from('items')
+              .insert([{
+                shop_id: user.shop_id,
+                sku: `BLK-${batch.batch_number}`,
+                name: `Bulk ${formulaName} Liquid (WIP)`,
+                item_type: 'bulk_liquid',
+                base_unit: 'ml',
+                cost_price: updatePayload.cost_per_ml,
+                current_stock: actualYieldMl,
+                is_active: true
+              }])
+              .select('id')
+              .single()
+
+            if (newBulk) bulkItemId = newBulk.id
+          }
+
+          if (bulkItemId) {
+            const { data: newLot } = await supabase
+              .from('inventory_lots')
+              .insert([{
+                shop_id: user.shop_id,
+                item_id: bulkItemId,
+                lot_number: `LOT-${batch.batch_number}`,
+                received_date: new Date().toISOString().split('T')[0],
+                initial_quantity: actualYieldMl,
+                available_quantity: actualYieldMl,
+                unit_cost: updatePayload.cost_per_ml,
+                location_id: wipLocation?.id || null,
+                status: 'available'
+              }])
+              .select('id')
+              .single()
+
+            if (newLot) {
+              await supabase
+                .from('inventory_ledger')
+                .insert([{
+                  shop_id: user.shop_id,
+                  item_id: bulkItemId,
+                  lot_id: newLot.id,
+                  location_id: wipLocation?.id || null,
+                  transaction_type: 'bulk_output',
+                  quantity: actualYieldMl,
+                  base_unit: 'ml',
+                  unit_cost: updatePayload.cost_per_ml,
+                  total_cost: totalMatCost,
+                  reference_id: `BATCH-${batch.batch_number}`,
+                  notes: `Yield from production batch ${batch.batch_number}`,
+                  user_id: user.id
+                }])
+            }
+          }
+        }
       }
+
+      // Clean payload
+      delete updatePayload.directBottling
+      delete updatePayload.packaging_components
+      delete updatePayload.target_product_id
+      delete updatePayload.fill_size_ml
+      delete updatePayload.good_bottles
 
       // Update production batch record
       const { error: updErr } = await supabase
@@ -674,10 +969,7 @@ export default function ProductionBatches() {
                   {/* Actions Bar */}
                   <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-2">
                     <button
-                      onClick={() => {
-                        setSelectedBatch(batch)
-                        setShowDetailModal(true)
-                      }}
+                      onClick={() => handleOpenDetailModal(batch)}
                       className="flex-1 py-1.5 px-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5"
                     >
                       <Eye size={14} /> View Details
@@ -694,10 +986,7 @@ export default function ProductionBatches() {
 
                     {batch.status === 'in_blending' && (
                       <button
-                        onClick={() => {
-                          setSelectedBatch(batch)
-                          setShowDetailModal(true)
-                        }}
+                        onClick={() => handleOpenDetailModal(batch)}
                         className="py-1.5 px-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
                       >
                         <Scale size={14} /> Weigh & Complete
@@ -706,10 +995,7 @@ export default function ProductionBatches() {
 
                     {batch.status === 'maturing' && (
                       <button
-                        onClick={() => {
-                          setSelectedBatch(batch)
-                          setShowDetailModal(true)
-                        }}
+                        onClick={() => handleOpenDetailModal(batch)}
                         className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
                       >
                         <CheckCircle2 size={14} /> Finalize
@@ -1052,49 +1338,264 @@ export default function ProductionBatches() {
                       </div>
                     )}
 
-                    <div className="pt-2 border-t border-purple-200">
-                      <p className="text-xs text-purple-800 font-bold mb-2">Finalize & Complete Bulk Liquid Yield:</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-700 mb-1">Actual Usable Yield (mL) *</label>
-                          <input
-                            type="number"
-                            id="actualYieldInput"
-                            defaultValue={selectedBatch.actual_volume_ml || selectedBatch.planned_volume_ml}
-                            className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-700 mb-1">QC Sign-off *</label>
-                          <select
-                            id="qcStatusSelect"
-                            defaultValue="passed"
-                            className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
-                          >
-                            <option value="passed">Passed QC</option>
-                            <option value="pending">Pending QC</option>
-                            <option value="failed">Failed QC</option>
-                          </select>
-                        </div>
-                        <div className="flex items-end">
+                    <div className="pt-3 border-t border-purple-200">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-black uppercase text-purple-900 tracking-wider">
+                          Final Production & Destination
+                        </span>
+                        {/* Mode Switcher */}
+                        <div className="flex bg-purple-100 p-0.5 rounded-lg text-[11px] font-bold">
                           <button
-                            disabled={saving}
-                            onClick={() => {
-                              const yieldInput = document.getElementById('actualYieldInput')
-                              const qcSelect = document.getElementById('qcStatusSelect')
-                              const vol = yieldInput ? Number(yieldInput.value) : selectedBatch.planned_volume_ml
-                              const qc = qcSelect ? qcSelect.value : 'passed'
-                              handleUpdateStatus(selectedBatch, 'completed', {
-                                actual_volume_ml: vol,
-                                qc_status: qc
-                              })
-                            }}
-                            className="w-full px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
+                            type="button"
+                            onClick={() => setCompletionMode('bulk')}
+                            className={`px-3 py-1 rounded-md transition cursor-pointer ${
+                              completionMode === 'bulk'
+                                ? 'bg-white text-purple-900 shadow-xs'
+                                : 'text-purple-700 hover:text-purple-900'
+                            }`}
                           >
-                            <CheckCircle2 size={14} /> Complete & Deduct Lots
+                            🍶 Bulk Liquid (WIP)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCompletionMode('direct_bottle')
+                              if (directBottleForm.components.length === 0) {
+                                handleOpenDetailModal(selectedBatch)
+                                setCompletionMode('direct_bottle')
+                              }
+                            }}
+                            className={`px-3 py-1 rounded-md transition cursor-pointer ${
+                              completionMode === 'direct_bottle'
+                                ? 'bg-purple-600 text-white shadow-xs'
+                                : 'text-purple-700 hover:text-purple-900'
+                            }`}
+                          >
+                            ✨ Direct to Shelf Bottles
                           </button>
                         </div>
                       </div>
+
+                      {completionMode === 'bulk' ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-white p-3 rounded-xl border border-purple-100">
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">Actual Usable Yield (mL) *</label>
+                            <input
+                              type="number"
+                              id="actualYieldInput"
+                              defaultValue={selectedBatch.actual_volume_ml || selectedBatch.planned_volume_ml}
+                              className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-gray-700 mb-1">QC Sign-off *</label>
+                            <select
+                              id="qcStatusSelect"
+                              defaultValue="passed"
+                              className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
+                            >
+                              <option value="passed">Passed QC</option>
+                              <option value="pending">Pending QC</option>
+                              <option value="failed">Failed QC</option>
+                            </select>
+                          </div>
+                          <div className="flex items-end">
+                            <button
+                              disabled={saving}
+                              onClick={() => {
+                                const yieldInput = document.getElementById('actualYieldInput')
+                                const qcSelect = document.getElementById('qcStatusSelect')
+                                const vol = yieldInput ? Number(yieldInput.value) : selectedBatch.planned_volume_ml
+                                const qc = qcSelect ? qcSelect.value : 'passed'
+                                handleUpdateStatus(selectedBatch, 'completed', {
+                                  actual_volume_ml: vol,
+                                  qc_status: qc,
+                                  directBottling: false
+                                })
+                              }}
+                              className="w-full px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                            >
+                              <CheckCircle2 size={14} /> Complete & Deduct Liquid Lots
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-white p-3.5 rounded-xl border border-purple-200 space-y-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                            <div>
+                              <label className="block text-[11px] font-bold text-gray-700 mb-1">Target Shelf Product *</label>
+                              <select
+                                value={directBottleForm.target_product_id}
+                                onChange={e => setDirectBottleForm({ ...directBottleForm, target_product_id: e.target.value })}
+                                className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
+                              >
+                                <option value="">-- Choose Shelf Product --</option>
+                                {products.map(p => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name} (Shelf Stock: {p.stock_quantity})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-bold text-gray-700 mb-1">Fill Size (mL) *</label>
+                              <input
+                                type="number"
+                                value={directBottleForm.fill_size_ml}
+                                onChange={e => {
+                                  const size = Number(e.target.value) || 50
+                                  const vol = Number(selectedBatch.actual_volume_ml) || Number(selectedBatch.planned_volume_ml) || 1000
+                                  const bCount = Math.max(1, Math.floor(vol / size))
+                                  setDirectBottleForm({
+                                    ...directBottleForm,
+                                    fill_size_ml: size,
+                                    good_bottles: bCount,
+                                    components: directBottleForm.components.map(c => ({
+                                      ...c,
+                                      quantity_used: bCount,
+                                      total_cost: Number(((bCount + Number(c.quantity_damaged || 0)) * c.unit_cost).toFixed(2))
+                                    }))
+                                  })
+                                }}
+                                className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-bold text-gray-700 mb-1">Good Bottles Produced *</label>
+                              <input
+                                type="number"
+                                value={directBottleForm.good_bottles}
+                                onChange={e => {
+                                  const bCount = Number(e.target.value) || 0
+                                  setDirectBottleForm({
+                                    ...directBottleForm,
+                                    good_bottles: bCount,
+                                    components: directBottleForm.components.map(c => ({
+                                      ...c,
+                                      quantity_used: bCount,
+                                      total_cost: Number(((bCount + Number(c.quantity_damaged || 0)) * c.unit_cost).toFixed(2))
+                                    }))
+                                  })
+                                }}
+                                className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Packaging Components Checklist */}
+                          <div>
+                            <span className="block text-[11px] font-bold text-gray-700 mb-1.5">
+                              Packaging Materials to Deduct (Bottles, Caps, Sprayers, Boxes):
+                            </span>
+                            {directBottleForm.components.length === 0 ? (
+                              <p className="text-xs text-gray-400 italic">No packaging items found in catalog. Create packaging items in Raw Materials first.</p>
+                            ) : (
+                              <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100 text-xs">
+                                {directBottleForm.components.map((c, idx) => {
+                                  const itemLots = availableLots.filter(l => String(l.item_id) === String(c.component_item_id))
+                                  const totalReq = Number(c.quantity_used || 0) + Number(c.quantity_damaged || 0)
+                                  const isLow = c.available_stock < totalReq
+
+                                  return (
+                                    <div key={idx} className={`p-2 flex items-center justify-between gap-2 ${c.selected ? 'bg-purple-50/40' : 'bg-gray-50 opacity-60'}`}>
+                                      <div className="flex items-center gap-2 min-w-[140px]">
+                                        <input
+                                          type="checkbox"
+                                          checked={c.selected}
+                                          onChange={e => {
+                                            const updated = [...directBottleForm.components]
+                                            updated[idx].selected = e.target.checked
+                                            setDirectBottleForm({ ...directBottleForm, components: updated })
+                                          }}
+                                          className="rounded text-purple-600 cursor-pointer"
+                                        />
+                                        <span className="font-bold text-gray-800 text-[11px]">{c.item_name}</span>
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <select
+                                          value={c.lot_id}
+                                          onChange={e => {
+                                            const selLot = itemLots.find(l => String(l.id) === String(e.target.value))
+                                            const updated = [...directBottleForm.components]
+                                            updated[idx].lot_id = selLot ? selLot.id : ''
+                                            updated[idx].unit_cost = selLot ? Number(selLot.unit_cost) : (Number(c.unit_cost) || 0)
+                                            updated[idx].total_cost = Number((totalReq * updated[idx].unit_cost).toFixed(2))
+                                            setDirectBottleForm({ ...directBottleForm, components: updated })
+                                          }}
+                                          className="text-[11px] px-2 py-1 border border-gray-300 rounded font-mono"
+                                        >
+                                          <option value="">-- Auto/Default Lot --</option>
+                                          {itemLots.map(l => (
+                                            <option key={l.id} value={l.id}>
+                                              {l.lot_number} (Avail: {l.available_quantity})
+                                            </option>
+                                          ))}
+                                        </select>
+
+                                        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${isLow ? 'bg-red-100 text-red-700 font-bold' : 'bg-emerald-100 text-emerald-800'}`}>
+                                          Stock: {c.available_stock}
+                                        </span>
+
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[10px] text-gray-500">Scrap/Dmg:</span>
+                                          <input
+                                            type="number"
+                                            value={c.quantity_damaged}
+                                            onChange={e => {
+                                              const dmg = Number(e.target.value) || 0
+                                              const updated = [...directBottleForm.components]
+                                              updated[idx].quantity_damaged = dmg
+                                              updated[idx].total_cost = Number(((Number(c.quantity_used) + dmg) * c.unit_cost).toFixed(2))
+                                              setDirectBottleForm({ ...directBottleForm, components: updated })
+                                            }}
+                                            className="w-12 px-1 py-0.5 border border-gray-300 rounded text-center text-xs"
+                                          />
+                                        </div>
+
+                                        <span className="text-xs font-bold text-purple-700 min-w-[70px] text-right font-mono">
+                                          Rs. {c.total_cost}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="pt-2 flex items-center justify-between">
+                            <div className="text-xs">
+                              <span className="text-gray-500">Liquid Cost: </span>
+                              <strong className="text-gray-900 font-mono">Rs. {Number(selectedBatch.total_material_cost || 0).toLocaleString()}</strong>
+                              <span className="mx-2 text-gray-300">|</span>
+                              <span className="text-gray-500">Packaging: </span>
+                              <strong className="text-purple-700 font-mono">
+                                Rs. {directBottleForm.components.filter(c => c.selected).reduce((s, c) => s + (Number(c.total_cost) || 0), 0).toLocaleString()}
+                              </strong>
+                            </div>
+
+                            <button
+                              disabled={saving || directBottleForm.good_bottles <= 0}
+                              onClick={() => {
+                                const vol = Number(selectedBatch.actual_volume_ml) || Number(selectedBatch.planned_volume_ml)
+                                handleUpdateStatus(selectedBatch, 'completed', {
+                                  actual_volume_ml: vol,
+                                  qc_status: 'passed',
+                                  directBottling: true,
+                                  target_product_id: directBottleForm.target_product_id,
+                                  fill_size_ml: directBottleForm.fill_size_ml,
+                                  good_bottles: directBottleForm.good_bottles,
+                                  packaging_components: directBottleForm.components
+                                })
+                              }}
+                              className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
+                            >
+                              <Package size={14} /> Complete & Deduct All Liquids + Packaging
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
