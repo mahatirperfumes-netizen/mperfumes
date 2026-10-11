@@ -1,13 +1,14 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../services/supabase'
+import { isManufacturer } from '../utils/featureGate'
 import { useEffect, useState, useRef } from 'react'
 
 // In-memory timestamp to prevent spamming get_shop_status RPC on every page transition
 let lastStatusCheckTime = 0
 let cachedShopStatus = 'active'
 
-function ProtectedRoute({ children, allowedRoles, requiredModule }) {
+function ProtectedRoute({ children, allowedRoles, requiredModule, manufacturerOnly = false }) {
   const { user, logout } = useAuth()
   const [isSuspended, setIsSuspended] = useState(false)
   const isMountedRef = useRef(true)
@@ -79,6 +80,29 @@ function ProtectedRoute({ children, allowedRoles, requiredModule }) {
   // If user is pure superadmin (not impersonating), redirect them to the Superadmin portal
   if (user.role === 'superadmin' && !user.isImpersonating) {
     return <Navigate to="/admin" replace />
+  }
+
+  // ── 2b. Manufacturer-Only Feature Enforcement ──
+  if (manufacturerOnly && !isManufacturer() && user.role !== 'superadmin') {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh] p-6">
+        <div className="max-w-md w-full bg-white rounded-2xl p-6 shadow-xl border border-gray-100 text-center">
+          <div className="w-14 h-14 bg-purple-100 text-purple-700 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl font-bold">
+            🧪
+          </div>
+          <h2 className="text-xl font-black text-gray-900 mb-2">Manufacturing Mode Required</h2>
+          <p className="text-sm text-gray-500 mb-6">
+            Formulas, Production Batches, and Bottling Runs are only available for accounts configured with manufacturing enabled.
+          </p>
+          <a
+            href="/dashboard"
+            className="inline-block px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm rounded-xl transition shadow-sm"
+          >
+            Return to Dashboard
+          </a>
+        </div>
+      </div>
+    )
   }
 
   // ── 3. Shop Admins & Impersonating Superadmins bypass module restrictions ──

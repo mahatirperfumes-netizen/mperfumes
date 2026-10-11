@@ -168,13 +168,38 @@ export function convertQuantity(value, fromUnit, toUnit, density = 1.0) {
 }
 
 /**
- * Calculates formula batch requirement
- * @param {number} batchSize - Target batch volume/weight (e.g., 2000 mL or 1500 g)
- * @param {number} percentage - Percentage in formula (e.g., 20 for 20%)
+ * Calculates formula batch requirement accounting for density and calculation basis
+ * @param {number} param1 - Batch size or percentage
+ * @param {number} param2 - Percentage or batch size
+ * @param {string} calculationBasis - 'weight_percentage' (% w/w) or 'volume_percentage' (% v/v)
+ * @param {number} density - Ingredient density (g/mL)
+ * @param {string} targetUnit - Ingredient target unit ('g', 'ml', 'kg', 'l', 'pcs')
  * @returns {number} Required quantity
  */
-export function calculateTargetIngredient(batchSize, percentage) {
-  const b = Number(batchSize) || 0
-  const p = Number(percentage) || 0
-  return Number(((b * p) / 100).toFixed(4))
+export function calculateTargetIngredient(param1, param2, calculationBasis = 'weight_percentage', density = 1.0, targetUnit = 'g') {
+  const p1 = Number(param1) || 0
+  const p2 = Number(param2) || 0
+  
+  // (p1 * p2) / 100 is commutative whether (batchSize, percentage) or (percentage, batchSize)
+  let qty = (p1 * p2) / 100
+
+  const d = Number(density) > 0 ? Number(density) : 1.0
+  const u = normalizeUnit(targetUnit)
+
+  // Cross-domain density adjustment if basis differs from unit
+  if (calculationBasis === 'weight_percentage' && (u === 'ml' || u === 'l') && d !== 1.0) {
+    // Weight % into volume: volume = mass / density
+    qty = qty / d
+  } else if (calculationBasis === 'volume_percentage' && (u === 'g' || u === 'kg') && d !== 1.0) {
+    // Volume % into mass: mass = volume * density
+    qty = qty * d
+  }
+
+  // Unit magnitude conversion if kg or l
+  if (u === 'kg' || u === 'l') {
+    qty = qty / 1000
+  }
+
+  return Number(qty.toFixed(4))
 }
+

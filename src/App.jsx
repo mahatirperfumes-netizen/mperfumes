@@ -112,9 +112,9 @@ function App() {
             <Route path="/suppliers/:id" element={<ProtectedRoute requiredModule="suppliers" allowedRoles={['admin']}><Layout><SupplierLedger /></Layout></ProtectedRoute>} />
             <Route path="/purchases" element={<ProtectedRoute requiredModule="purchases" allowedRoles={['admin', 'manager']}><Layout><Purchases /></Layout></ProtectedRoute>} />
             <Route path="/purchase-history" element={<ProtectedRoute requiredModule="purchase-history" allowedRoles={['admin', 'manager', 'accountant']}><Layout><PurchaseHistory /></Layout></ProtectedRoute>} />
-            <Route path="/formulas" element={<ProtectedRoute requiredModule="formulas" allowedRoles={['admin', 'manager']}><Layout><Formulas /></Layout></ProtectedRoute>} />
-            <Route path="/production" element={<ProtectedRoute requiredModule="production" allowedRoles={['admin', 'manager']}><Layout><ProductionBatches /></Layout></ProtectedRoute>} />
-            <Route path="/bottling" element={<ProtectedRoute requiredModule="bottling" allowedRoles={['admin', 'manager']}><Layout><BottlingRuns /></Layout></ProtectedRoute>} />
+            <Route path="/formulas" element={<ProtectedRoute requiredModule="formulas" manufacturerOnly={true} allowedRoles={['admin', 'manager']}><Layout><Formulas /></Layout></ProtectedRoute>} />
+            <Route path="/production" element={<ProtectedRoute requiredModule="production" manufacturerOnly={true} allowedRoles={['admin', 'manager']}><Layout><ProductionBatches /></Layout></ProtectedRoute>} />
+            <Route path="/bottling" element={<ProtectedRoute requiredModule="bottling" manufacturerOnly={true} allowedRoles={['admin', 'manager']}><Layout><BottlingRuns /></Layout></ProtectedRoute>} />
             <Route path="/expenses" element={<ProtectedRoute requiredModule="expenses" allowedRoles={['admin']}><Layout><Expenses /></Layout></ProtectedRoute>} />
             <Route path="/inventory" element={<ProtectedRoute requiredModule="inventory" allowedRoles={['admin']}><Layout><Inventory /></Layout></ProtectedRoute>} />
             <Route path="/reports" element={<ProtectedRoute requiredModule="reports" allowedRoles={['admin']}><Layout><Reports /></Layout></ProtectedRoute>} />

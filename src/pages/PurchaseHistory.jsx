@@ -5,6 +5,7 @@ import { supabase } from '../services/supabase'
 import { useAuth } from '../context/AuthContext'
 import { db, addToSyncQueue, moveToTrash } from '../services/db'
 import { recordAuditLog } from '../services/auditService'
+import { depleteItemStockAcrossLots } from '../services/inventoryService'
 import PasswordModal from '../components/PasswordModal'
 import * as XLSX from 'xlsx'
 import { printHTML } from '../utils/printUtils'
@@ -154,15 +155,39 @@ function PurchaseHistory() {
                     .update({ returned_qty: (item.returned_qty || 0) + returnQty })
                     .eq('id', item.id)
 
-                // Reduce stock — fetch live stock first
-                const { data: liveProduct } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).maybeSingle()
-                const currentStock = liveProduct?.stock_quantity ?? 0
-                const newStock = Math.max(0, currentStock - returnQty)
-                await supabase.from('products')
-                    .update({ stock_quantity: newStock })
-                    .eq('id', item.product_id)
-                // Keep local DB in sync
-                await db.products.update(item.product_id, { stock_quantity: newStock })
+                // Reduce stock — handle finished product vs raw materials
+                if (item.product_id) {
+                    const { data: liveProduct } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).maybeSingle()
+                    const currentStock = liveProduct?.stock_quantity ?? 0
+                    const newStock = Math.max(0, currentStock - returnQty)
+                    await supabase.from('products')
+                        .update({ stock_quantity: newStock })
+                        .eq('id', item.product_id)
+                    // Keep local DB in sync
+                    await db.products.update(item.product_id, { stock_quantity: newStock })
+                } else {
+                    // Raw Material / Packaging Component Supplier Return
+                    const rawName = (item.product_name || '').replace(/^\[RAW\]\s*/i, '').replace(/\s*\([^)]*\)\s*$/, '').trim()
+                    const { data: rawItem } = await supabase
+                        .from('items')
+                        .select('id, current_stock, base_unit')
+                        .eq('shop_id', user.shop_id)
+                        .eq('name', rawName)
+                        .maybeSingle()
+
+                    if (rawItem) {
+                        await depleteItemStockAcrossLots({
+                            shopId: user.shop_id,
+                            itemId: rawItem.id,
+                            quantityToDeduct: returnQty,
+                            unit: rawItem.base_unit || 'g',
+                            referenceId: `PO-RET-${selectedPurchase.id}`,
+                            notes: `Supplier return for PO #${selectedPurchase.id}`,
+                            transactionType: 'supplier_return',
+                            userId: user.id
+                        })
+                    }
+                }
             }
 
             // Update purchase record total

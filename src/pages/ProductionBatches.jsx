@@ -4,11 +4,12 @@ import { useAuth } from '../context/AuthContext'
 import { db } from '../services/db'
 import { isManufacturer } from '../utils/featureGate'
 import { calculateTargetIngredient } from '../utils/unitConversion'
+import { depleteItemStockAcrossLots, creditFinishedGoodsStock } from '../services/inventoryService'
 import {
   Workflow, Plus, Search, Filter, Play, CheckCircle2, 
   Clock, AlertTriangle, Printer, X, Eye, FileText, Check,
   Layers, FlaskConical, Sparkles, ChevronRight, Scale,
-  Package, Droplets, CheckSquare, Square
+  Package, Droplets, CheckSquare, Square, Trash2
 } from 'lucide-react'
 
 export default function ProductionBatches() {
@@ -164,10 +165,11 @@ export default function ProductionBatches() {
       const density = item?.density || (item?.item_type === 'raw_chemical' ? 0.789 : 0.95)
       
       const targetQty = calculateTargetIngredient(
-        fi.percentage,
         plannedVol,
+        fi.percentage,
         formula.calculation_basis || 'weight_percentage',
-        density
+        density,
+        fi.unit || 'g'
       )
 
       // Find lots for this item ordered by FEFO / FIFO
@@ -329,11 +331,77 @@ export default function ProductionBatches() {
 
       if (issueErr) throw issueErr
 
+      // If starting directly into blending, deduct raw materials across lots
+      if (startDirectly) {
+        await deductBatchIngredients(createdBatch.batch_number, form.ingredients)
+      }
+
       setShowCreateModal(false)
       await fetchData()
     } catch (err) {
       console.error('Batch creation error:', err)
       setError(err.message || 'Failed to create production batch')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Deduct Raw Materials across inventory lots using FEFO/FIFO
+  const deductBatchIngredients = async (batchNumber, ingredientIssues) => {
+    try {
+      // Check if already deducted in ledger to avoid double deduction
+      const { data: existingIssues } = await supabase
+        .from('inventory_ledger')
+        .select('id')
+        .eq('shop_id', user.shop_id)
+        .eq('reference_id', `BATCH-${batchNumber}`)
+        .eq('transaction_type', 'production_issue')
+        .limit(1)
+
+      if (existingIssues && existingIssues.length > 0) {
+        return // Already deducted
+      }
+
+      for (const ing of ingredientIssues) {
+        const qtyUsed = Number(ing.actual_quantity !== undefined ? ing.actual_quantity : ing.target_quantity) || 0
+        if (qtyUsed > 0) {
+          await depleteItemStockAcrossLots({
+            shopId: user.shop_id,
+            itemId: ing.ingredient_item_id,
+            preferredLotId: ing.lot_id,
+            quantityToDeduct: qtyUsed,
+            unit: ing.unit || 'g',
+            referenceId: `BATCH-${batchNumber}`,
+            notes: `Raw ingredient issued into batch ${batchNumber}`,
+            transactionType: 'production_issue',
+            userId: user.id
+          })
+        }
+      }
+    } catch (err) {
+      console.error('Error issuing batch ingredients:', err)
+    }
+  }
+
+  // Delete / Cancel Draft Batch
+  const handleDeleteBatch = async (batch) => {
+    if (batch.status !== 'draft') {
+      return alert('Only draft batches can be deleted or cancelled.')
+    }
+    if (!window.confirm(`Are you sure you want to delete draft batch ${batch.batch_number}?`)) {
+      return
+    }
+
+    setSaving(true)
+    try {
+      await supabase.from('batch_ingredient_issues').delete().eq('batch_id', batch.id)
+      await supabase.from('production_batches').delete().eq('id', batch.id)
+      if (db.production_batches) {
+        await db.production_batches.delete(batch.id).catch(() => {})
+      }
+      await fetchData()
+    } catch (err) {
+      alert(err.message || 'Failed to delete draft batch')
     } finally {
       setSaving(false)
     }
@@ -349,12 +417,16 @@ export default function ProductionBatches() {
         ...extraData
       }
 
-      if (newStatus === 'in_blending' && !batch.started_at) {
-        updatePayload.started_at = new Date().toISOString()
+      if (newStatus === 'in_blending') {
+        if (!batch.started_at) {
+          updatePayload.started_at = new Date().toISOString()
+        }
+        // Deduct raw ingredients as soon as blending starts
+        const issues = batch.batch_ingredient_issues || []
+        await deductBatchIngredients(batch.batch_number, issues)
       }
 
       // ── COMPLETION LOGIC ──
-      // If moving to 'completed', deduct exact inventory lots and credit bulk output or finished goods
       if (newStatus === 'completed') {
         const completedAt = new Date().toISOString()
         updatePayload.completed_at = completedAt
@@ -367,82 +439,9 @@ export default function ProductionBatches() {
         const totalMatCost = Number(batch.total_material_cost) || 0
         updatePayload.cost_per_ml = actualYieldMl > 0 ? Number((totalMatCost / actualYieldMl).toFixed(4)) : 0
 
-        // 1. Deduct ingredient lots & items stock catalog-wide
+        // Ensure raw ingredients are deducted if skipped earlier
         const issues = batch.batch_ingredient_issues || []
-        for (const issue of issues) {
-          const qtyUsed = Number(issue.actual_quantity) || 0
-          if (qtyUsed > 0) {
-            let lot = null
-            if (issue.lot_id) {
-              const { data: fetchedLot } = await supabase
-                .from('inventory_lots')
-                .select('*')
-                .eq('id', issue.lot_id)
-                .maybeSingle()
-              lot = fetchedLot
-            }
-
-            if (lot) {
-              const newAvailable = Math.max(0, Number(lot.available_quantity) - qtyUsed)
-              const lotStatus = newAvailable <= 0 ? 'exhausted' : 'available'
-
-              await supabase
-                .from('inventory_lots')
-                .update({ available_quantity: newAvailable, status: lotStatus })
-                .eq('id', lot.id)
-
-              if (db.inventory_lots) {
-                await db.inventory_lots.update(lot.id, { available_quantity: newAvailable, status: lotStatus }).catch(() => {})
-              }
-            }
-
-            // Deduct items current_stock catalog-wide
-            const { data: itm } = await supabase
-              .from('items')
-              .select('id, current_stock')
-              .eq('id', issue.ingredient_item_id)
-              .maybeSingle()
-
-            if (itm) {
-              const newCurStock = Math.max(0, (Number(itm.current_stock) || 0) - qtyUsed)
-              await supabase
-                .from('items')
-                .update({ current_stock: newCurStock })
-                .eq('id', issue.ingredient_item_id)
-
-              if (db.items) {
-                await db.items.update(issue.ingredient_item_id, { current_stock: newCurStock }).catch(() => {})
-              }
-            }
-            await supabase.rpc('decrement_item_stock', {
-              item_id: issue.ingredient_item_id,
-              qty: qtyUsed
-            }).catch(() => {
-              return supabase.rpc('decrement_item_stock', {
-                p_item_id: issue.ingredient_item_id,
-                p_qty: qtyUsed
-              }).catch(() => {})
-            })
-
-            // Record in immutable ledger
-            await supabase
-              .from('inventory_ledger')
-              .insert([{
-                shop_id: user.shop_id,
-                item_id: issue.ingredient_item_id,
-                lot_id: lot ? lot.id : null,
-                location_id: lot?.location_id || null,
-                transaction_type: 'production_issue',
-                quantity: -Math.abs(qtyUsed),
-                base_unit: issue.unit,
-                unit_cost: issue.unit_cost,
-                total_cost: issue.total_cost,
-                reference_id: `BATCH-${batch.batch_number}`,
-                notes: `Raw ingredient consumed in batch ${batch.batch_number}`,
-                user_id: user.id
-              }])
-          }
-        }
+        await deductBatchIngredients(batch.batch_number, issues)
 
         // 2. CHECK PRODUCTION DESTINATION: DIRECT BOTTLING vs BULK MATURATION
         if (extraData.directBottling) {
@@ -456,175 +455,40 @@ export default function ProductionBatches() {
             const totalQty = usedQty + damagedQty
 
             if (totalQty > 0) {
-              let lot = null
-              if (c.lot_id) {
-                const { data: pLot } = await supabase
-                  .from('inventory_lots')
-                  .select('*')
-                  .eq('id', c.lot_id)
-                  .maybeSingle()
-                lot = pLot
-              }
-
-              if (lot) {
-                const newAvail = Math.max(0, Number(lot.available_quantity) - totalQty)
-                const lotStat = newAvail <= 0 ? 'exhausted' : 'available'
-                await supabase
-                  .from('inventory_lots')
-                  .update({ available_quantity: newAvail, status: lotStat })
-                  .eq('id', lot.id)
-
-                if (db.inventory_lots) {
-                  await db.inventory_lots.update(lot.id, { available_quantity: newAvail, status: lotStat }).catch(() => {})
-                }
-              }
-
-              // Deduct packaging item stock
-              const { data: pItm } = await supabase
-                .from('items')
-                .select('id, current_stock')
-                .eq('id', c.component_item_id)
-                .maybeSingle()
-
-              if (pItm) {
-                const newPStock = Math.max(0, (Number(pItm.current_stock) || 0) - totalQty)
-                await supabase
-                  .from('items')
-                  .update({ current_stock: newPStock })
-                  .eq('id', c.component_item_id)
-
-                if (db.items) {
-                  await db.items.update(c.component_item_id, { current_stock: newPStock }).catch(() => {})
-                }
-              }
-              await supabase.rpc('decrement_item_stock', {
-                item_id: c.component_item_id,
-                qty: totalQty
-              }).catch(() => {
-                return supabase.rpc('decrement_item_stock', {
-                  p_item_id: c.component_item_id,
-                  p_qty: totalQty
-                }).catch(() => {})
+              await depleteItemStockAcrossLots({
+                shopId: user.shop_id,
+                itemId: c.component_item_id,
+                preferredLotId: c.lot_id,
+                quantityToDeduct: totalQty,
+                unit: 'pcs',
+                referenceId: `BATCH-${batch.batch_number}`,
+                notes: `Packaging used in direct batch bottling ${batch.batch_number}`,
+                transactionType: 'bottling_issue',
+                userId: user.id
               })
 
               totalPkgCost += Number((totalQty * (c.unit_cost || 0)).toFixed(2))
-
-              // Immutable ledger for packaging issues
-              if (usedQty > 0) {
-                await supabase
-                  .from('inventory_ledger')
-                  .insert([{
-                    shop_id: user.shop_id,
-                    item_id: c.component_item_id,
-                    lot_id: lot ? lot.id : null,
-                    transaction_type: 'bottling_issue',
-                    quantity: -Math.abs(usedQty),
-                    base_unit: 'pcs',
-                    unit_cost: c.unit_cost,
-                    total_cost: Number((usedQty * c.unit_cost).toFixed(2)),
-                    reference_id: `BATCH-${batch.batch_number}`,
-                    notes: `Packaging used in direct batch bottling ${batch.batch_number}`,
-                    user_id: user.id
-                  }])
-              }
-
-              if (damagedQty > 0) {
-                await supabase
-                  .from('inventory_ledger')
-                  .insert([{
-                    shop_id: user.shop_id,
-                    item_id: c.component_item_id,
-                    lot_id: lot ? lot.id : null,
-                    transaction_type: 'bottling_damage',
-                    quantity: -Math.abs(damagedQty),
-                    base_unit: 'pcs',
-                    unit_cost: c.unit_cost,
-                    total_cost: Number((damagedQty * c.unit_cost).toFixed(2)),
-                    reference_id: `BATCH-${batch.batch_number}`,
-                    notes: `Damaged packaging in direct bottling ${batch.batch_number}`,
-                    user_id: user.id
-                  }])
-              }
             }
           }
 
-          // Credit Finished Goods to shelf products & lots
+          // Credit Finished Goods to shelf products & items catalog & lots
           const goodBottles = Number(extraData.good_bottles) || 0
           const totalBatchCost = totalMatCost + totalPkgCost
           const unitBottleCost = goodBottles > 0 ? Number((totalBatchCost / goodBottles).toFixed(2)) : 0
-
-          let targetProduct = null
-          if (extraData.target_product_id) {
-            targetProduct = products.find(p => String(p.id) === String(extraData.target_product_id))
-          }
-
-          if (targetProduct && goodBottles > 0) {
-            const currentQty = Number(targetProduct.stock_quantity) || 0
-            const newQty = currentQty + goodBottles
-
-            await supabase
-              .from('products')
-              .update({
-                stock_quantity: newQty,
-                cost_price: unitBottleCost
-              })
-              .eq('id', targetProduct.id)
-
-            if (db.products) {
-              await db.products.update(targetProduct.id, {
-                stock_quantity: newQty,
-                cost_price: unitBottleCost
-              }).catch(() => {})
-            }
-          }
-
-          // Create Finished Goods lot in inventory_lots
-          const finishedLotNumber = `LOT-FG-${batch.batch_number}`
           const finishedLocation = locations.find(l => l.name?.toLowerCase().includes('finished') || l.name?.toLowerCase().includes('shelf'))
 
-          let finishedItemId = null
-          if (targetProduct) {
-            const { data: existItm } = await supabase
-              .from('items')
-              .select('id')
-              .eq('shop_id', user.shop_id)
-              .eq('name', targetProduct.name)
-              .maybeSingle()
-            finishedItemId = existItm?.id || null
-          }
+          const fgResult = await creditFinishedGoodsStock({
+            shopId: user.shop_id,
+            targetProductId: extraData.target_product_id,
+            quantity: goodBottles,
+            unitCost: unitBottleCost,
+            referenceId: `BATCH-${batch.batch_number}`,
+            notes: `Direct production to finished bottles credited to POS shelf`,
+            locationId: finishedLocation?.id || null,
+            userId: user.id
+          })
 
-          const { data: fgLot } = await supabase
-            .from('inventory_lots')
-            .insert([{
-              shop_id: user.shop_id,
-              item_id: finishedItemId,
-              lot_number: finishedLotNumber,
-              received_date: new Date().toISOString().split('T')[0],
-              initial_quantity: goodBottles,
-              available_quantity: goodBottles,
-              unit_cost: unitBottleCost,
-              location_id: finishedLocation?.id || null,
-              status: 'available'
-            }])
-            .select('id')
-            .maybeSingle()
-
-          // Finished Goods output in inventory_ledger
-          await supabase
-            .from('inventory_ledger')
-            .insert([{
-              shop_id: user.shop_id,
-              item_id: finishedItemId,
-              lot_id: fgLot?.id || null,
-              transaction_type: 'bottling_output',
-              quantity: goodBottles,
-              base_unit: 'pcs',
-              unit_cost: unitBottleCost,
-              total_cost: totalBatchCost,
-              reference_id: `BATCH-${batch.batch_number}`,
-              notes: `Direct production to finished bottles credited to POS shelf`,
-              user_id: user.id
-            }])
+          const finishedItemId = fgResult?.finishedItemId || null
 
           // Record in bottling_runs for traceability continuity
           const runNo = `RUN-${batch.batch_number}`
@@ -718,7 +582,7 @@ export default function ProductionBatches() {
                   total_cost: totalMatCost,
                   reference_id: `BATCH-${batch.batch_number}`,
                   notes: `Yield from production batch ${batch.batch_number}`,
-                  user_id: user.id
+                  created_by: user.username || user.email || 'Admin'
                 }])
             }
           }
@@ -986,12 +850,21 @@ export default function ProductionBatches() {
                     </button>
 
                     {batch.status === 'draft' && (
-                      <button
-                        onClick={() => handleUpdateStatus(batch, 'in_blending')}
-                        className="py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
-                      >
-                        <Play size={14} /> Start
-                      </button>
+                      <>
+                        <button
+                          onClick={() => handleUpdateStatus(batch, 'in_blending')}
+                          className="py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                        >
+                          <Play size={14} /> Start
+                        </button>
+                        <button
+                          onClick={() => handleDeleteBatch(batch)}
+                          title="Delete Draft Batch"
+                          className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-bold transition flex items-center justify-center border border-red-200"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </>
                     )}
 
                     {batch.status === 'in_blending' && (

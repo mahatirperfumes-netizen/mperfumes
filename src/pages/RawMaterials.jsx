@@ -235,18 +235,19 @@ export default function RawMaterials() {
         // If stock balance was adjusted
         const stockDiff = newStock - prevStock
         if (stockDiff !== 0) {
-          await supabase.from('inventory_ledger').insert([{
+          const ledgerEntry = {
             shop_id: user.shop_id,
             item_id: editingItem.id,
-            transaction_type: 'adjustment',
+            transaction_type: stockDiff > 0 ? 'adjustment' : 'adjustment_loss',
             quantity: stockDiff,
             base_unit: payload.base_unit,
             unit_cost: payload.cost_price,
             total_cost: Number((Math.abs(stockDiff) * payload.cost_price).toFixed(2)),
             reference_id: 'MANUAL-ADJUST',
             notes: `Stock adjusted from ${prevStock} to ${newStock} in Master Data`,
-            user_id: user.id
-          }])
+            created_by: user.username || user.email || 'Admin'
+          }
+          await supabase.from('inventory_ledger').insert([ledgerEntry]).catch(err => console.warn('Ledger error:', err))
 
           if (stockDiff > 0) {
             const lotNum = formData.lot_number?.trim() || `LOT-ADJ-${Date.now().toString().slice(-6)}`
@@ -264,6 +265,24 @@ export default function RawMaterials() {
 
             if (adjLot && db.inventory_lots) {
               await db.inventory_lots.put(adjLot).catch(() => {})
+            }
+          } else if (stockDiff < 0) {
+            let remainingToDeduct = Math.abs(stockDiff)
+            const itemLots = lots.filter(l => String(l.item_id) === String(editingItem.id) && Number(l.available_quantity) > 0)
+            for (const lot of itemLots) {
+              if (remainingToDeduct <= 0) break
+              const lotAvail = Number(lot.available_quantity) || 0
+              const deduct = Math.min(lotAvail, remainingToDeduct)
+              const newLotAvail = Math.max(0, lotAvail - deduct)
+              remainingToDeduct -= deduct
+              const newStatus = newLotAvail <= 0 ? 'exhausted' : 'available'
+              await supabase.from('inventory_lots').update({
+                available_quantity: newLotAvail,
+                status: newStatus
+              }).eq('id', lot.id).catch(() => {})
+              if (db.inventory_lots) {
+                await db.inventory_lots.update(lot.id, { available_quantity: newLotAvail, status: newStatus }).catch(() => {})
+              }
             }
           }
         }
@@ -296,7 +315,7 @@ export default function RawMaterials() {
             notes: 'Opening stock balance on creation'
           }]).select().maybeSingle()
 
-          await supabase.from('inventory_ledger').insert([{
+          const ledgerEntry = {
             shop_id: user.shop_id,
             item_id: data.id,
             lot_id: newLot?.id || null,
@@ -307,11 +326,15 @@ export default function RawMaterials() {
             total_cost: Number((initialQty * payload.cost_price).toFixed(2)),
             reference_id: 'OPENING-STOCK',
             notes: 'Initial opening stock registered in Master Data',
-            user_id: user.id
-          }])
+            created_by: user.username || user.email || 'Admin'
+          }
+          await supabase.from('inventory_ledger').insert([ledgerEntry]).catch(err => console.warn('Ledger error:', err))
 
           if (newLot && db.inventory_lots) {
             await db.inventory_lots.put(newLot).catch(() => {})
+          }
+          if (db.inventory_ledger) {
+            await db.inventory_ledger.add(ledgerEntry).catch(() => {})
           }
         }
 

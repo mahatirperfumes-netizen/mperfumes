@@ -3,6 +3,7 @@ import { supabase } from '../services/supabase'
 import { useAuth } from '../context/AuthContext'
 import { db } from '../services/db'
 import { isManufacturer } from '../utils/featureGate'
+import { depleteItemStockAcrossLots, creditFinishedGoodsStock } from '../services/inventoryService'
 import {
   Factory, Plus, Search, Filter, CheckCircle2, 
   AlertTriangle, Printer, X, Eye, Layers, 
@@ -88,10 +89,10 @@ export default function BottlingRuns() {
         setBottlingRuns(local || [])
       }
 
-      // 2. Completed Production Batches
+      // 2. Completed Production Batches with formula packaging BOMs
       const { data: bData } = await supabase
         .from('production_batches')
-        .select('*, formulas(name, version)')
+        .select('*, formulas(id, name, version, formula_packaging_boms(*))')
         .eq('shop_id', user.shop_id)
         .eq('status', 'completed')
         .order('id', { ascending: false })
@@ -149,9 +150,21 @@ export default function BottlingRuns() {
     const bottles = Number(plannedCount) || 50
     const size = Number(fillSize) || 50
 
-    // Auto-populate packaging components (Bottle, Cap, Sprayer, Box)
-    // If formula has packaging BOMs, could use those, otherwise suggest standard packaging items
-    const suggestedComponents = packagingItems.map(p => {
+    // Auto-populate packaging components
+    // If formula has packaging BOMs, prioritize those specific components
+    const formulaBOMs = batch?.formulas?.formula_packaging_boms || []
+    let targetPkgItems = packagingItems
+    if (formulaBOMs.length > 0) {
+      const bomItemIds = formulaBOMs.map(b => String(b.component_item_id))
+      const matched = packagingItems.filter(p => bomItemIds.includes(String(p.id)))
+      if (matched.length > 0) targetPkgItems = matched
+    }
+
+    const suggestedComponents = targetPkgItems.map(p => {
+      const bomEntry = formulaBOMs.find(b => String(b.component_item_id) === String(p.id))
+      const perUnitRatio = Number(bomEntry?.quantity_per_unit) || 1
+      const totalComponentQty = bottles * perUnitRatio
+
       const itemLots = availableLots.filter(l => String(l.item_id) === String(p.id))
       const totalStock = itemLots.reduce((acc, l) => acc + Number(l.available_quantity || 0), 0)
       const defaultLot = itemLots[0] || null
@@ -160,14 +173,14 @@ export default function BottlingRuns() {
       return {
         component_item_id: p.id,
         item_name: p.name,
-        quantity_used: bottles, // 1 per bottle
+        quantity_used: totalComponentQty,
         quantity_damaged: 0,
         lot_id: defaultLot ? defaultLot.id : '',
         lot_number: defaultLot ? defaultLot.lot_number : '',
         unit_cost: unitCost,
-        total_cost: Number((bottles * unitCost).toFixed(2)),
+        total_cost: Number((totalComponentQty * unitCost).toFixed(2)),
         available_stock: totalStock,
-        selected: true // toggle whether this component is used in this run
+        selected: true
       }
     })
 
@@ -177,11 +190,16 @@ export default function BottlingRuns() {
       planned_bottles: bottles,
       actual_good_bottles: bottles,
       fill_size_ml: size,
-      components: prev.components.length > 0 ? prev.components.map(c => ({
-        ...c,
-        quantity_used: bottles,
-        total_cost: Number(((bottles + Number(c.quantity_damaged || 0)) * c.unit_cost).toFixed(2))
-      })) : suggestedComponents
+      components: prev.components.length > 0 ? prev.components.map(c => {
+        const bomEntry = formulaBOMs.find(b => String(b.component_item_id) === String(c.component_item_id))
+        const perUnitRatio = Number(bomEntry?.quantity_per_unit) || 1
+        const totalQty = bottles * perUnitRatio
+        return {
+          ...c,
+          quantity_used: totalQty,
+          total_cost: Number(((totalQty + Number(c.quantity_damaged || 0)) * c.unit_cost).toFixed(2))
+        }
+      }) : suggestedComponents
     }))
   }
 
@@ -205,8 +223,14 @@ export default function BottlingRuns() {
     setShowCreateModal(true)
   }
 
-  // Cost Calculations
+  // Cost & Remaining Volume Calculations
   const selectedBatchObj = completedBatches.find(b => String(b.id) === String(form.source_batch_id))
+  const alreadyConsumedBulk = selectedBatchObj 
+    ? bottlingRuns.filter(r => String(r.source_batch_id) === String(selectedBatchObj.id)).reduce((sum, r) => sum + Number(r.bulk_consumed_ml || 0), 0)
+    : 0
+  const batchTotalBulk = Number(selectedBatchObj?.actual_volume_ml) || Number(selectedBatchObj?.planned_volume_ml) || 0
+  const remainingBulkVolume = Math.max(0, batchTotalBulk - alreadyConsumedBulk)
+
   const bulkPerMlCost = selectedBatchObj ? Number(selectedBatchObj.cost_per_ml || 0) : 0
   const bulkVolumeConsumed = Number(form.actual_good_bottles || form.planned_bottles) * Number(form.fill_size_ml)
   const bulkCostTotal = Number((bulkVolumeConsumed * bulkPerMlCost).toFixed(2))
@@ -235,6 +259,12 @@ export default function BottlingRuns() {
     }
     if (Number(form.actual_good_bottles) <= 0) {
       setError('Actual good bottles must be greater than 0')
+      return
+    }
+
+    // Validate bulk volume sufficiency
+    if (bulkVolumeConsumed > remainingBulkVolume && remainingBulkVolume > 0) {
+      setError(`Requested bulk volume (${bulkVolumeConsumed} mL) exceeds remaining batch bulk liquid (${remainingBulkVolume} mL)!`)
       return
     }
 
@@ -317,7 +347,7 @@ export default function BottlingRuns() {
 
       if (rErr) throw rErr
 
-      // 3. Insert bottling component issues
+      // 3. Insert bottling component issues and deplete packaging across lots using FEFO/FIFO
       const selectedComponents = form.components.filter(c => c.selected !== false)
       if (selectedComponents.length > 0) {
         const compIssues = selectedComponents.map(c => ({
@@ -331,100 +361,22 @@ export default function BottlingRuns() {
 
         await supabase.from('bottling_component_issues').insert(compIssues)
 
-        // Deduct component lots, items stock & log to ledger
         for (const c of selectedComponents) {
           const usedQty = Number(c.quantity_used) || 0
           const damagedQty = Number(c.quantity_damaged) || 0
           const totalQty = usedQty + damagedQty
           if (totalQty > 0) {
-            let lot = null
-            if (c.lot_id) {
-              const { data: fetchedLot } = await supabase
-                .from('inventory_lots')
-                .select('*')
-                .eq('id', c.lot_id)
-                .single()
-              lot = fetchedLot
-            }
-
-            if (lot) {
-              const newAvail = Math.max(0, Number(lot.available_quantity) - totalQty)
-              const lotStat = newAvail <= 0 ? 'exhausted' : 'available'
-
-              await supabase
-                .from('inventory_lots')
-                .update({ available_quantity: newAvail, status: lotStat })
-                .eq('id', lot.id)
-
-              if (db.inventory_lots) {
-                await db.inventory_lots.update(lot.id, { available_quantity: newAvail, status: lotStat }).catch(() => {})
-              }
-            }
-
-            // Deduct items current_stock catalog-wide
-            const { data: itm } = await supabase
-              .from('items')
-              .select('id, current_stock')
-              .eq('id', c.component_item_id)
-              .maybeSingle()
-
-            if (itm) {
-              const newStock = Math.max(0, (Number(itm.current_stock) || 0) - totalQty)
-              await supabase
-                .from('items')
-                .update({ current_stock: newStock })
-                .eq('id', c.component_item_id)
-
-              if (db.items) {
-                await db.items.update(c.component_item_id, { current_stock: newStock }).catch(() => {})
-              }
-            }
-            await supabase.rpc('decrement_item_stock', {
-              item_id: c.component_item_id,
-              qty: totalQty
-            }).catch(() => {
-              return supabase.rpc('decrement_item_stock', {
-                p_item_id: c.component_item_id,
-                p_qty: totalQty
-              }).catch(() => {})
+            await depleteItemStockAcrossLots({
+              shopId: user.shop_id,
+              itemId: c.component_item_id,
+              preferredLotId: c.lot_id,
+              quantityToDeduct: totalQty,
+              unit: 'pcs',
+              referenceId: `RUN-${createdRun.run_number}`,
+              notes: `Packaging consumed in bottling run ${createdRun.run_number}`,
+              transactionType: 'bottling_issue',
+              userId: user.id
             })
-
-            // Immutable ledger records (used vs damaged)
-            if (usedQty > 0) {
-              await supabase
-                .from('inventory_ledger')
-                .insert([{
-                  shop_id: user.shop_id,
-                  item_id: c.component_item_id,
-                  lot_id: lot ? lot.id : null,
-                  transaction_type: 'bottling_issue',
-                  quantity: -Math.abs(usedQty),
-                  base_unit: 'pcs',
-                  unit_cost: c.unit_cost,
-                  total_cost: Number((usedQty * c.unit_cost).toFixed(2)),
-                  reference_id: `RUN-${createdRun.run_number}`,
-                  notes: `Packaging consumed in bottling run ${createdRun.run_number}`,
-                  user_id: user.id
-                }])
-            }
-
-            if (damagedQty > 0) {
-              await supabase
-                .from('inventory_ledger')
-                .insert([{
-                  shop_id: user.shop_id,
-                  item_id: c.component_item_id,
-                  lot_id: lot ? lot.id : null,
-                  transaction_type: 'bottling_damage',
-                  quantity: -Math.abs(damagedQty),
-                  base_unit: 'pcs',
-                  unit_cost: c.unit_cost,
-                  total_cost: Number((damagedQty * c.unit_cost).toFixed(2)),
-                  reference_id: `RUN-${createdRun.run_number}`,
-                  notes: `Damaged/scrapped packaging during run ${createdRun.run_number}`,
-                  user_id: user.id
-                }])
-            }
           }
         }
       }
@@ -487,68 +439,25 @@ export default function BottlingRuns() {
               total_cost: bulkCostTotal,
               reference_id: `RUN-${createdRun.run_number}`,
               notes: `Bulk liquid consumed in bottling run ${createdRun.run_number}`,
-              user_id: user.id
+              created_by: user.username || user.email || 'Admin'
             }])
         }
       }
 
-      // 4. Create Finished Goods Lot
-      const finishedLotNumber = `LOT-FG-${createdRun.run_number}`
+      // 4. Credit Finished Goods to shelf products & items catalog & lots
       const finishedLocation = locations.find(l => l.name?.toLowerCase().includes('finished') || l.name?.toLowerCase().includes('shelf'))
 
-      const { data: fgLot } = await supabase
-        .from('inventory_lots')
-        .insert([{
-          shop_id: user.shop_id,
-          item_id: targetItemId,
-          lot_number: finishedLotNumber,
-          received_date: new Date().toISOString().split('T')[0],
-          initial_quantity: Number(form.actual_good_bottles),
-          available_quantity: Number(form.actual_good_bottles),
-          unit_cost: unitBottleCost,
-          location_id: finishedLocation?.id || null,
-          status: 'available'
-        }])
-        .select('id')
-        .single()
-
-      // Log bottling_output in ledger
-      await supabase
-        .from('inventory_ledger')
-        .insert([{
-          shop_id: user.shop_id,
-          item_id: targetItemId,
-          lot_id: fgLot?.id || null,
-          transaction_type: 'bottling_output',
-          quantity: Number(form.actual_good_bottles),
-          base_unit: 'pcs',
-          unit_cost: unitBottleCost,
-          total_cost: totalRunCost,
-          reference_id: `RUN-${createdRun.run_number}`,
-          notes: `Finished perfume bottles credited to sellable stock`,
-          user_id: user.id
-        }])
-
-      // 5. UPDATE SHELF POS PRODUCTS STOCK!
-      // This links directly to the cash register and POS sales!
-      if (targetProduct) {
-        const currentQty = Number(targetProduct.stock_quantity) || 0
-        const newQty = currentQty + Number(form.actual_good_bottles)
-
-        await supabase
-          .from('products')
-          .update({
-            stock_quantity: newQty,
-            cost_price: unitBottleCost
-          })
-          .eq('id', targetProduct.id)
-
-        // Update local Dexie products table
-        await db.products?.update(targetProduct.id, {
-          stock_quantity: newQty,
-          cost_price: unitBottleCost
-        }).catch(() => {})
-      }
+      await creditFinishedGoodsStock({
+        shopId: user.shop_id,
+        targetProductId: form.target_product_id,
+        finishedItemId: targetItemId,
+        quantity: Number(form.actual_good_bottles),
+        unitCost: unitBottleCost,
+        referenceId: `RUN-${createdRun.run_number}`,
+        notes: `Finished perfume bottles credited to sellable stock`,
+        locationId: finishedLocation?.id || null,
+        userId: user.id
+      })
 
       setShowCreateModal(false)
       await fetchData()
