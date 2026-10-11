@@ -15,6 +15,7 @@ export default function RawMaterials() {
   const [categories, setCategories] = useState([])
   const [brands, setBrands] = useState([])
   const [lots, setLots] = useState([])
+  const [locations, setLocations] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
@@ -74,11 +75,12 @@ export default function RawMaterials() {
         setItems(local || [])
       }
 
-      // 2. Fetch Categories, Brands, and Available Lots
-      const [catRes, brandRes, lotsRes] = await Promise.all([
+      // 2. Fetch Categories, Brands, Available Lots, and Locations
+      const [catRes, brandRes, lotsRes, locsRes] = await Promise.all([
         supabase.from('categories').select('id, name').eq('shop_id', user.shop_id),
         supabase.from('brands').select('id, name').eq('shop_id', user.shop_id),
-        supabase.from('inventory_lots').select('*').eq('shop_id', user.shop_id).gt('available_quantity', 0)
+        supabase.from('inventory_lots').select('*').eq('shop_id', user.shop_id).gt('available_quantity', 0),
+        supabase.from('inventory_locations').select('*').eq('shop_id', user.shop_id)
       ])
       if (catRes.data) setCategories(catRes.data)
       if (brandRes.data) setBrands(brandRes.data)
@@ -88,6 +90,13 @@ export default function RawMaterials() {
       } else {
         const localLots = await db.inventory_lots?.where('shop_id').equals(user.shop_id).toArray()
         setLots(localLots || [])
+      }
+      if (locsRes.data) {
+        setLocations(locsRes.data)
+        await db.inventory_locations?.bulkPut(JSON.parse(JSON.stringify(locsRes.data))).catch(() => {})
+      } else {
+        const localLocs = await db.inventory_locations?.where('shop_id').equals(user.shop_id).toArray()
+        setLocations(localLocs || [])
       }
 
     } catch (err) {
@@ -251,9 +260,13 @@ export default function RawMaterials() {
 
           if (stockDiff > 0) {
             const lotNum = formData.lot_number?.trim() || `LOT-ADJ-${Date.now().toString().slice(-6)}`
+            const defaultLoc = locations.find(l =>
+              (formData.item_type === 'packaging' ? (l.code?.includes('PKG') || l.name?.toLowerCase().includes('pack')) : (l.code?.includes('RAW') || l.name?.toLowerCase().includes('raw'))) || l.is_default
+            )
             const { data: adjLot } = await supabase.from('inventory_lots').insert([{
               shop_id: user.shop_id,
               item_id: editingItem.id,
+              location_id: defaultLoc?.id || null,
               lot_number: lotNum,
               received_date: new Date().toISOString().split('T')[0],
               initial_quantity: stockDiff,
@@ -303,9 +316,13 @@ export default function RawMaterials() {
         // If initial opening stock quantity > 0, generate initial inventory lot and ledger entry
         if (initialQty > 0) {
           const lotNum = formData.lot_number?.trim() || `LOT-INIT-${Date.now().toString().slice(-6)}`
+          const defaultLoc = locations.find(l =>
+            (formData.item_type === 'packaging' ? (l.code?.includes('PKG') || l.name?.toLowerCase().includes('pack')) : (l.code?.includes('RAW') || l.name?.toLowerCase().includes('raw'))) || l.is_default
+          )
           const { data: newLot } = await supabase.from('inventory_lots').insert([{
             shop_id: user.shop_id,
             item_id: data.id,
+            location_id: defaultLoc?.id || null,
             lot_number: lotNum,
             received_date: new Date().toISOString().split('T')[0],
             initial_quantity: initialQty,
